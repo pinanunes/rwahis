@@ -849,10 +849,14 @@ get_woah_outbreaks_full_info <- function(start_date,
   }
 
   # --- 6. Final Join and Cleanup ---
-  # Ensure successful_pairs exists and has rows corresponding to processed_data
-  if (!exists("successful_pairs") || nrow(successful_pairs) == 0) {
-      if (verbose) message("Context data ('successful_pairs') is missing or empty, returning processed data without full context.")
-      # Ensure essential IDs are present if possible
+  # Create successful_pairs from the report_outbreak_pairs that had successful detail fetches
+  successful_pairs <- report_outbreak_pairs %>%
+    filter(reportId %in% (map_dbl(successful_details, ~ .x$outbreak$createdByReportId %||% NA) %>% na.omit())) %>%
+    filter(outbreakId %in% (map_dbl(successful_details, ~ .x$outbreak$outbreakId %||% NA) %>% na.omit()))
+  
+  # Ensure successful_pairs has rows corresponding to processed_data
+  if (nrow(successful_pairs) == 0) {
+      if (verbose) message("No matching context data found, returning processed data without full context.")
       final_table <- processed_data %>%
                      select(any_of(c("reportId", "outbreakId")), everything()) # Bring IDs forward
   } else {
