@@ -493,3 +493,260 @@ get_woah_outbreaks <- function(start_date,
 
   return(combined_data)
 }
+
+
+# --- Function: get_woah_outbreak_details (Internal Helper) ---
+
+#' Fetch Full Details for a Single Outbreak
+#'
+#' Retrieves the complete information set for a specific outbreak using its
+#' report ID and outbreak ID from the WOAH API. This is typically used as a
+#' helper function.
+#'
+#' @importFrom httr GET modify_url add_headers stop_for_status content timeout status_code
+#' @importFrom jsonlite fromJSON validate
+#' @importFrom purrr %||%
+#'
+#' @param report_id The numeric ID of the report containing the outbreak.
+#' @param outbreak_id The numeric ID of the specific outbreak.
+#' @param language Language code (default: "en").
+#' @param verbose Logical: Print progress messages? (Default: FALSE)
+#'
+#' @return A list containing the detailed outbreak information, or NULL if an error occurs
+#'   or the outbreak is not found.
+#' @noRd
+get_woah_outbreak_details <- function(report_id, outbreak_id, language = "en", verbose = FALSE) {
+
+  # Input validation
+  if (!is.numeric(report_id) || length(report_id) != 1 || report_id <= 0) {
+    stop("report_id must be a single positive number.")
+  }
+  if (!is.numeric(outbreak_id) || length(outbreak_id) != 1 || outbreak_id <= 0) {
+    stop("outbreak_id must be a single positive number.")
+  }
+
+  api_base_url <- "https://wahis.woah.org/api/v1/pi/review/report"
+  api_path <- file.path(report_id, "outbreak", outbreak_id, "all-information")
+  api_url <- modify_url(url = file.path(api_base_url, api_path), query = list(language = language))
+
+  if (verbose) message(sprintf("Fetching details for Report ID: %d, Outbreak ID: %d", report_id, outbreak_id))
+
+  details_data <- tryCatch({
+    response <- GET(
+      url = api_url,
+      add_headers("Accept" = "application/json"),
+      timeout(60) # Increased timeout for potentially larger response
+    )
+
+    # Check specifically for 404 Not Found
+    if (status_code(response) == 404) {
+       if (verbose) message(sprintf("Outbreak details not found (404) for Report ID: %d, Outbreak ID: %d", report_id, outbreak_id))
+       return(NULL) # Return NULL specifically for 404
+    }
+
+    # Check for other HTTP errors
+    stop_for_status(response, task = sprintf("fetch outbreak details (Report: %d, Outbreak: %d)", report_id, outbreak_id))
+
+    content_raw <- content(response, as = "text", encoding = "UTF-8")
+
+    if (nchar(content_raw) == 0 || !validate(content_raw)) {
+      warning(sprintf("Received empty or invalid JSON response for outbreak details (Report: %d, Outbreak: %d).", report_id, outbreak_id))
+      return(NULL)
+    }
+
+    parsed_data <- fromJSON(content_raw, flatten = TRUE) # Flatten might be useful here too
+
+    if (verbose) message(sprintf("Successfully fetched details for Report ID: %d, Outbreak ID: %d", report_id, outbreak_id))
+
+    return(parsed_data)
+
+  }, error = function(e) {
+    message(sprintf("\nError during API call for outbreak details (Report: %d, Outbreak: %d).", report_id, outbreak_id))
+    status_code_val <- NA
+    response_content_on_error <- ""
+     if (exists("response", inherits = FALSE)) {
+       status_code_val <- tryCatch(status_code(response), error = function(e2) NA)
+       response_content_on_error <- tryCatch(content(response, as="text", encoding="UTF-8"), error = function(e2) "")
+     }
+    message("Status Code: ", status_code_val %||% "N/A")
+    if (nzchar(response_content_on_error)) {
+      message("Response Content on Error:\n", response_content_on_error)
+    }
+    message("Original R Error: ", e$message)
+    return(NULL) # Return NULL on error
+  })
+
+  return(details_data)
+}
+
+
+# --- Function: get_woah_outbreaks_full_info ---
+
+#' Fetch Full Outbreak Information (Events, Locations, Details)
+#'
+#' Retrieves comprehensive outbreak information by first fetching event and location data,
+#' linking them, and then querying detailed information for each specific outbreak.
+#'
+#' @importFrom dplyr inner_join select distinct rename
+#' @importFrom purrr map2 possibly list_rbind
+#' @importFrom tidyr unnest_wider unnest_longer
+#' @importFrom tibble as_tibble
+#'
+#' @param start_date Character string or Date object for the start of the event date range (YYYY-MM-DD).
+#' @param end_date Character string or Date object for the end of the event date range (YYYY-MM-DD).
+#' @param disease_name Optional: Character string specifying the exact disease name.
+#'   If NULL or empty, fetches data for all diseases.
+#' @param language Language code (default: "en").
+#' @param verbose Logical: Print progress messages? (Default: FALSE)
+#'
+#' @return A list of lists, where each inner list contains the full details for one outbreak.
+#'   Returns an empty list if no outbreaks match the criteria or if errors occur during fetching.
+#'   Returns NULL if the initial event or location fetch fails critically.
+#' @examples
+#' \dontrun{
+#'   # Get full details for Foot and Mouth disease outbreaks in March 2025
+#'   fmd_full_details <- get_woah_outbreaks_full_info(
+#'     start_date = "2025-03-01",
+#'     end_date = "2025-03-26",
+#'     disease_name = "Foot and mouth disease virus (Inf. with) "
+#'   )
+#'   if (length(fmd_full_details) > 0) {
+#'     print(paste("Fetched details for", length(fmd_full_details), "outbreaks."))
+#'     # Inspect the first outbreak's details
+#'     # str(fmd_full_details[[1]], max.level = 2)
+#'   }
+#'
+#'   # Get full details for all outbreaks in the first week of March 2025
+#'   all_full_details <- get_woah_outbreaks_full_info(
+#'     start_date = "2025-03-01",
+#'     end_date = "2025-03-07",
+#'     disease_name = NULL
+#'   )
+#'    if (length(all_full_details) > 0) {
+#'     print(paste("Fetched details for", length(all_full_details), "outbreaks."))
+#'   }
+#' }
+#' @export
+get_woah_outbreaks_full_info <- function(start_date,
+                                         end_date,
+                                         disease_name = NULL,
+                                         language = "en",
+                                         verbose = FALSE) {
+
+  if (verbose) message("--- Starting Full Outbreak Information Fetch ---")
+
+  # --- 1. Fetch Outbreak Events ---
+  if (verbose) message("Step 1: Fetching outbreak events...")
+  outbreak_events <- get_woah_outbreaks(
+    start_date = start_date,
+    end_date = end_date,
+    disease_name = disease_name,
+    language = language,
+    verbose = verbose # Pass verbosity down
+  )
+
+  if (is.null(outbreak_events)) {
+    message("Error: Failed to fetch initial outbreak event data. Aborting.")
+    return(NULL)
+  }
+  if (nrow(outbreak_events) == 0) {
+    if (verbose) message("No outbreak events found for the specified criteria.")
+    return(list()) # Return empty list if no events
+  }
+  if (verbose) message(sprintf("Found %d outbreak events.", nrow(outbreak_events)))
+
+  # --- 2. Fetch Outbreak Locations ---
+  if (verbose) message("Step 2: Fetching outbreak locations...")
+  outbreak_locations <- get_woah_outbreak_locations(
+    start_date = start_date,
+    end_date = end_date,
+    disease_name = disease_name,
+    language = language,
+    verbose = verbose # Pass verbosity down
+  )
+
+  if (is.null(outbreak_locations)) {
+    message("Error: Failed to fetch outbreak location data. Aborting.")
+    # Consider if partial results from events should be returned, but safer to abort.
+    return(NULL)
+  }
+   if (nrow(outbreak_locations) == 0) {
+    if (verbose) message("No outbreak locations found for the specified criteria (although events were found).")
+    return(list()) # Return empty list if no locations
+  }
+  if (verbose) message(sprintf("Found %d outbreak location records.", nrow(outbreak_locations)))
+
+  # --- 3. Link Events and Locations ---
+  if (verbose) message("Step 3: Linking events and locations...")
+
+  # Ensure necessary columns exist
+  if (!"eventId" %in% names(outbreak_events) || !"reportId" %in% names(outbreak_events)) {
+     message("Error: 'eventId' or 'reportId' missing from outbreak events data.")
+     return(list())
+  }
+   if (!"eventId" %in% names(outbreak_locations) || !"outbreakId" %in% names(outbreak_locations)) {
+     message("Error: 'eventId' or 'outbreakId' missing from outbreak locations data.")
+     return(list())
+  }
+
+  # Select relevant columns and join
+  events_subset <- outbreak_events %>%
+    select(eventId, reportId) %>%
+    distinct() # Ensure unique event-report pairs if duplicates exist
+
+  locations_subset <- outbreak_locations %>%
+    select(eventId, outbreakId) %>%
+    distinct() # Ensure unique event-outbreak pairs
+
+  # Join to get reportId and outbreakId pairs
+  # Need to handle cases where eventId might be in one but not the other? Inner join is safest.
+  report_outbreak_pairs <- inner_join(events_subset, locations_subset, by = "eventId")
+
+  if (nrow(report_outbreak_pairs) == 0) {
+    if (verbose) message("No matching event/location pairs found after joining.")
+    return(list())
+  }
+
+  # Ensure unique reportId-outbreakId pairs before fetching details
+  report_outbreak_pairs <- report_outbreak_pairs %>%
+    select(reportId, outbreakId) %>%
+    distinct()
+
+  n_pairs <- nrow(report_outbreak_pairs)
+  if (verbose) message(sprintf("Found %d unique report/outbreak pairs to fetch details for.", n_pairs))
+
+  # --- 4. Fetch Details for Each Pair ---
+  if (verbose) message("Step 4: Fetching full details for each outbreak...")
+
+  # Create a 'possibly' version of the details function to handle errors gracefully
+  possibly_get_details <- possibly(get_woah_outbreak_details, otherwise = NULL, quiet = !verbose)
+
+  # Use map2 to iterate over reportId and outbreakId simultaneously
+  all_details_list <- map2(
+    report_outbreak_pairs$reportId,
+    report_outbreak_pairs$outbreakId,
+    ~ possibly_get_details(
+        report_id = .x,
+        outbreak_id = .y,
+        language = language,
+        verbose = verbose
+      ),
+    .progress = verbose # Show progress bar if verbose
+  )
+
+  # Filter out NULL results (errors or 404s)
+  successful_details <- Filter(Negate(is.null), all_details_list)
+  n_successful <- length(successful_details)
+  n_failed <- n_pairs - n_successful
+
+  if (verbose) {
+      message(sprintf("Successfully fetched details for %d outbreaks.", n_successful))
+      if (n_failed > 0) {
+          message(sprintf("Failed to fetch details for %d outbreaks (check logs for errors/404s).", n_failed))
+      }
+  }
+
+  if (verbose) message("--- Full Outbreak Information Fetch Complete ---")
+
+  return(successful_details)
+}
