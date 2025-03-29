@@ -165,7 +165,7 @@ get_woah_outbreak_locations <- function(start_date,
 
   if (verbose) {
     message("---- Sending JSON Payload for Locations ----")
-    message(prettify(json_payload_string))
+    # Removed message(prettify(json_payload_string))
     message("------------------------------------------")
   }
 
