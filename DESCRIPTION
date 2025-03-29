@@ -1,9 +1,9 @@
 Package: rwahis
 Type: Package
-Title: What the Package Does (Title Case)
+Title: A library to access WAHIS the global animal health reference database of the World Organization for Animal Health (WOAH)
 Version: 0.1.0
-Author: Who wrote it
-Maintainer: The package maintainer <yourself@example.com>
+Author: Telmo Nunes
+Maintainer: Telmo Nunes <yopinanunes@gmail.com>
 Description: More about what it does (maybe more than one line)
     Use four spaces when indenting paragraphs within the Description.
 License: What license is it under?
@@ -14,4 +14,4 @@ Imports:
     jsonlite,
     dplyr,
     purrr
-RoxygenNote: 7.0.0 # Or the version you use
+RoxygenNote: 7.3.2 
