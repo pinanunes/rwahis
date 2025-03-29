@@ -353,7 +353,7 @@ get_woah_outbreaks <- function(start_date,
 
     if (verbose) {
       message(sprintf("---- Sending JSON Payload (Page %d) ----", current_page))
-      message(prettify(json_payload_string))
+      # Removed message(prettify(json_payload_string))
       message("-----------------------------")
     }
 
