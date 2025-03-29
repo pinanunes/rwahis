@@ -749,123 +749,145 @@ get_woah_outbreaks_full_info <- function(start_date,
       }
   }
 
-  if (verbose) message("--- Full Outbreak Information Fetch Complete ---")
-
   # --- 5. Process Details List into a Tibble ---
   if (verbose) message("Step 5: Processing fetched details into a table...")
 
   processed_data <- tryCatch({
-    # Use map_dfr for robust row-binding, handling potential variations
     map_dfr(successful_details, ~ {
-      # Extract main outbreak info safely
-      outbreak_info <- .x$outbreak %||% list()
+      # Ensure the input is a list
+      if (!is.list(.x)) return(tibble()) # Skip if not a list
+
+      # Extract main outbreak info using flattened names and safe access
+      outbreak_info <- as_tibble(.x$outbreak %||% list()) %>%
+                       { if(nrow(.) == 0) tibble(outbreakId = NA_integer_) else . } %>%
+                       select(
+                         outbreakId = any_of("outbreakId"),
+                         reportId = any_of("createdByReportId"),
+                         oieReference = any_of("oieReference"),
+                         location = any_of("location"),
+                         latitude = any_of("latitude"),
+                         longitude = any_of("longitude"),
+                         isLocationApprox = any_of("isLocationApprox"),
+                         epiUnitType = any_of("epiUnitType.translation"),
+                         isCluster = any_of("isCluster"),
+                         clusterCount = any_of("clusterCount"),
+                         startDate = any_of("startDate"),
+                         endDate = any_of("endDate")
+                       ) %>%
+                       mutate(outbreakId = .$outbreakId %||% NA_integer_) # Ensure ID exists
+
+      if (is.na(outbreak_info$outbreakId) || nrow(outbreak_info) == 0) return(tibble())
+
       # Extract species quantities safely
       species_quantities_list <- .x$speciesQuantities %||% list()
-      # Extract admin divisions safely
-      admin_divisions_list <- .x$adminDivisions %||% list()
-
-      # Create a base tibble for this outbreak
-      base_tbl <- tibble(
-        outbreakId = outbreak_info$outbreakId %||% NA_integer_,
-        reportId = outbreak_info$createdByReportId %||% NA_integer_, # Get reportId from details if possible
-        oieReference = outbreak_info$oieReference %||% NA_character_,
-        location = outbreak_info$location %||% NA_character_,
-        latitude = outbreak_info$latitude %||% NA_real_,
-        longitude = outbreak_info$longitude %||% NA_real_,
-        isLocationApprox = outbreak_info$isLocationApprox %||% NA,
-        epiUnitType = outbreak_info$epiUnitType.translation %||% NA_character_,
-        isCluster = outbreak_info$isCluster %||% NA,
-        clusterCount = outbreak_info$clusterCount %||% NA_integer_,
-        startDate = outbreak_info$startDate %||% NA_character_, # Keep as char for now
-        endDate = outbreak_info$endDate %||% NA_character_ # Keep as char for now
-      )
-
-      # Process species quantities (can be multiple rows per outbreak)
-      if (length(species_quantities_list) > 0 && is.data.frame(species_quantities_list)) {
+      if (length(species_quantities_list) > 0 && is.data.frame(species_quantities_list) && nrow(species_quantities_list) > 0) {
          species_tbl <- species_quantities_list %>%
            as_tibble() %>%
-           select(
-             speciesName = totalQuantities.speciesName,
-             isWild = totalQuantities.isWild,
-             susceptible = totalQuantities.susceptible,
-             cases = totalQuantities.cases,
-             deaths = totalQuantities.deaths,
-             killed = totalQuantities.killed,
-             slaughtered = totalQuantities.slaughtered,
-             vaccinated = totalQuantities.vaccinated,
-             # Include new quantities if needed, prefixing names
-             new_susceptible = newQuantities.susceptible,
-             new_cases = newQuantities.cases,
-             new_deaths = newQuantities.deaths,
-             new_killed = newQuantities.killed,
-             new_slaughtered = newQuantities.slaughtered,
-             new_vaccinated = newQuantities.vaccinated
-           ) %>%
-           # Add outbreakId for joining back later if needed, or just repeat base_tbl rows
-           mutate(outbreakId = base_tbl$outbreakId) # Add outbreakId to link
+           transmute( # Use transmute and provide defaults with %||%
+             speciesName = totalQuantities.speciesName %||% NA_character_,
+             isWild = totalQuantities.isWild %||% NA,
+             susceptible = totalQuantities.susceptible %||% NA_integer_,
+             cases = totalQuantities.cases %||% NA_integer_,
+             deaths = totalQuantities.deaths %||% NA_integer_,
+             killed = totalQuantities.killed %||% NA_integer_,
+             slaughtered = totalQuantities.slaughtered %||% NA_integer_,
+             vaccinated = totalQuantities.vaccinated %||% NA_integer_,
+             new_susceptible = newQuantities.susceptible %||% NA_integer_,
+             new_cases = newQuantities.cases %||% NA_integer_,
+             new_deaths = newQuantities.deaths %||% NA_integer_,
+             new_killed = newQuantities.killed %||% NA_integer_,
+             new_slaughtered = newQuantities.slaughtered %||% NA_integer_,
+             new_vaccinated = newQuantities.vaccinated %||% NA_integer_
+           )
       } else {
-        # Create an empty placeholder if no species data
-        species_tbl <- tibble(
-            outbreakId = base_tbl$outbreakId, # Ensure outbreakId exists
-            speciesName = NA_character_, isWild = NA, susceptible = NA_integer_,
-            cases = NA_integer_, deaths = NA_integer_, killed = NA_integer_,
-            slaughtered = NA_integer_, vaccinated = NA_integer_,
-            new_susceptible = NA_integer_, new_cases = NA_integer_, new_deaths = NA_integer_,
-            new_killed = NA_integer_, new_slaughtered = NA_integer_, new_vaccinated = NA_integer_
-        )
+         species_tbl <- tibble( # Placeholder with correct column types
+             speciesName = NA_character_, isWild = NA, susceptible = NA_integer_,
+             cases = NA_integer_, deaths = NA_integer_, killed = NA_integer_,
+             slaughtered = NA_integer_, vaccinated = NA_integer_,
+             new_susceptible = NA_integer_, new_cases = NA_integer_, new_deaths = NA_integer_,
+             new_killed = NA_integer_, new_slaughtered = NA_integer_, new_vaccinated = NA_integer_
+         )
       }
+      species_tbl <- species_tbl %>% mutate(outbreakId = outbreak_info$outbreakId)
 
-      # Process admin divisions (usually multiple levels)
-      if (length(admin_divisions_list) > 0 && is.data.frame(admin_divisions_list)) {
+      # Extract admin divisions safely
+      admin_divisions_list <- .x$adminDivisions %||% list()
+      if (length(admin_divisions_list) > 0 && is.data.frame(admin_divisions_list) && nrow(admin_divisions_list) > 0) {
           admin_tbl <- admin_divisions_list %>%
               as_tibble() %>%
-              select(adminLevel, adminName = name) %>%
-              # Create columns like adminLevel_1, adminLevel_2
+              select(adminLevel = any_of("adminLevel"), adminName = any_of("name")) %>%
+              filter(!is.na(adminLevel)) %>%
               mutate(adminLevelName = paste0("adminLevel_", adminLevel)) %>%
-              select(-adminLevel) %>%
-              # Pivot wider - handle cases with missing levels?
-              # Use distinct to avoid issues if API returns duplicates?
+              select(adminLevelName, adminName) %>%
               distinct() %>%
-              tidyr::pivot_wider(names_from = adminLevelName, values_from = adminName) %>%
-              # Add outbreakId for joining
-              mutate(outbreakId = base_tbl$outbreakId)
-
+              tidyr::pivot_wider(names_from = adminLevelName, values_from = adminName)
       } else {
-          admin_tbl <- tibble(outbreakId = base_tbl$outbreakId) # Empty tibble with ID
+          admin_tbl <- tibble() # Empty tibble
       }
+      admin_tbl <- admin_tbl %>% mutate(outbreakId = outbreak_info$outbreakId)
 
-      # Combine base info with species and admin info
-      # Join species first (can create multiple rows)
-      combined <- left_join(base_tbl, species_tbl, by = "outbreakId", relationship = "many-to-many") # Should be one-to-many if species_tbl is correct
-      # Join admin info (should be one row per outbreak)
-      combined <- left_join(combined, admin_tbl, by = "outbreakId")
+      # Combine base info, admin info, and species info
+      # Ensure outbreakId is present in all parts before joining
+      combined_base <- left_join(outbreak_info, admin_tbl, by = "outbreakId")
+      combined_final <- left_join(combined_base, species_tbl, by = "outbreakId", relationship = "many-to-many") # Expect one-to-many
 
-      return(combined)
+      return(combined_final)
 
-    }, .id = NULL) # .id = NULL as we have outbreakId inside
+    }, .id = NULL)
 
   }, error = function(e) {
-      message("Error processing the fetched details list into a table: ", e$message)
+      err_msg <- sprintf("Error processing the fetched details list into a table: %s", e$message)
+      message(err_msg)
+      # Optionally add more context here if possible, e.g., which outbreakId failed
       return(tibble()) # Return empty tibble on processing error
   })
 
+  # Check if processed_data is empty before proceeding
+  if (nrow(processed_data) == 0) {
+      if (verbose) message("No data after processing details list.")
+      return(tibble())
+  }
 
   # --- 6. Final Join and Cleanup ---
-  # Join the processed details back with the initial context (country, disease, etc.)
-  # Use the 'successful_pairs' tibble which has the context linked to the successful fetches
-  final_table <- left_join(
-      successful_pairs %>% select(reportId, outbreakId, eventId, country, disease), # Context from successful pairs
-      processed_data,                                                              # Processed details
-      by = c("reportId", "outbreakId")                                             # Join keys
-  ) %>%
-  # Relocate columns for better readability
-  relocate(eventId, reportId, outbreakId, country, disease, location, longitude, latitude, startDate, endDate) %>%
-  # Convert date strings
-  mutate(across(any_of(c("startDate", "endDate", "outbreak_startDate")), ~ suppressWarnings(as.Date(sub("T.*", "", .x))))) %>% # Extract date part
-  # Ensure consistent types for numeric columns that might be all NA
-  mutate(across(any_of(c("susceptible", "cases", "deaths", "killed", "slaughtered", "vaccinated",
-                       "new_susceptible", "new_cases", "new_deaths", "new_killed", "new_slaughtered", "new_vaccinated")),
-                ~ as.integer(.x)))
+  # Ensure successful_pairs exists and has rows corresponding to processed_data
+  if (!exists("successful_pairs") || nrow(successful_pairs) == 0) {
+      if (verbose) message("Context data ('successful_pairs') is missing or empty, returning processed data without full context.")
+      # Ensure essential IDs are present if possible
+      final_table <- processed_data %>%
+                     select(any_of(c("reportId", "outbreakId")), everything()) # Bring IDs forward
+  } else {
+      # Ensure join keys exist in both tables
+      join_keys <- intersect(names(successful_pairs), names(processed_data))
+      join_keys <- intersect(join_keys, c("reportId", "outbreakId")) # Use only reportId and outbreakId for joining
+
+      if(length(join_keys) == 0) {
+          warning("Cannot join context data: No common ID columns (reportId, outbreakId) found between context and processed details.")
+          final_table <- processed_data
+      } else {
+          if (verbose) message(paste("Joining context using keys:", paste(join_keys, collapse=", ")))
+          final_table <- left_join(
+              successful_pairs %>% select(any_of(c("reportId", "outbreakId", "eventId", "country", "disease"))), # Context
+              processed_data,                                                                                    # Processed details
+              by = join_keys
+          )
+      }
+  }
+
+  # Final cleanup and type conversion
+  final_table <- final_table %>%
+      # Relocate columns for better readability
+      relocate(any_of(c("eventId", "reportId", "outbreakId", "country", "disease", "location", "longitude", "latitude", "startDate", "endDate"))) %>%
+      # Convert date strings (handle potential parsing errors)
+      mutate(across(any_of(c("startDate", "endDate")),
+                    ~ suppressWarnings(as.Date(sub("T.*", "", .x))))) %>%
+      # Ensure consistent types for numeric columns
+      mutate(across(any_of(c("latitude", "longitude")), ~ suppressWarnings(as.numeric(.x)))) %>%
+      mutate(across(any_of(c("outbreakId", "reportId", "eventId", "clusterCount",
+                           "susceptible", "cases", "deaths", "killed", "slaughtered", "vaccinated",
+                           "new_susceptible", "new_cases", "new_deaths", "new_killed", "new_slaughtered", "new_vaccinated")),
+                    ~ suppressWarnings(as.integer(.x)))) %>%
+      # Ensure logical types
+      mutate(across(any_of(c("isLocationApprox", "isCluster", "isWild")), ~ suppressWarnings(as.logical(.x))))
 
   if (verbose) message(sprintf("Finished processing. Returning table with %d rows.", nrow(final_table)))
   if (verbose) message("--- Full Outbreak Information Fetch Complete ---")
