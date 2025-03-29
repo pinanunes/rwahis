@@ -2,7 +2,7 @@
 % Please edit documentation in R/hello.R
 \name{get_woah_outbreaks_full_info}
 \alias{get_woah_outbreaks_full_info}
-\title{Fetch Full Outbreak Information (Events, Locations, Details)}
+\title{Fetch Full Outbreak Information (Events, Locations, Details) as a Table}
 \usage{
 get_woah_outbreaks_full_info(
   start_date,
@@ -25,13 +25,15 @@ If NULL or empty, fetches data for all diseases.}
 \item{verbose}{Logical: Print progress messages? (Default: FALSE)}
 }
 \value{
-A list of lists, where each inner list contains the full details for one outbreak.
-  Returns an empty list if no outbreaks match the criteria or if errors occur during fetching.
+A tibble containing the combined details for all successfully fetched outbreaks.
+  Columns include outbreak details, administrative divisions, and species quantities.
+  Returns an empty tibble if no outbreaks match the criteria or if errors occur during fetching.
   Returns NULL if the initial event or location fetch fails critically.
 }
 \description{
 Retrieves comprehensive outbreak information by first fetching event and location data,
-linking them, and then querying detailed information for each specific outbreak.
+linking them, querying detailed information for each specific outbreak, and finally
+processing the results into a single data frame (tibble).
 }
 \examples{
 \dontrun{

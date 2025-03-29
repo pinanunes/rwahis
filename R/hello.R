@@ -582,15 +582,17 @@ get_woah_outbreak_details <- function(report_id, outbreak_id, language = "en", v
 
 # --- Function: get_woah_outbreaks_full_info ---
 
-#' Fetch Full Outbreak Information (Events, Locations, Details)
+#' Fetch Full Outbreak Information (Events, Locations, Details) as a Table
 #'
 #' Retrieves comprehensive outbreak information by first fetching event and location data,
-#' linking them, and then querying detailed information for each specific outbreak.
+#' linking them, querying detailed information for each specific outbreak, and finally
+#' processing the results into a single data frame (tibble).
 #'
-#' @importFrom dplyr inner_join select distinct rename
-#' @importFrom purrr map2 possibly list_rbind
-#' @importFrom tidyr unnest_wider unnest_longer
-#' @importFrom tibble as_tibble
+#' @importFrom dplyr inner_join select distinct rename bind_rows mutate across relocate left_join everything contains starts_with
+#' @importFrom purrr map map2 possibly map_dfr keep discard set_names map_lgl
+#' @importFrom tidyr unnest_wider unnest_longer unnest pivot_wider
+#' @importFrom tibble as_tibble tibble enframe
+#' @importFrom rlang :=
 #'
 #' @param start_date Character string or Date object for the start of the event date range (YYYY-MM-DD).
 #' @param end_date Character string or Date object for the end of the event date range (YYYY-MM-DD).
@@ -599,8 +601,9 @@ get_woah_outbreak_details <- function(report_id, outbreak_id, language = "en", v
 #' @param language Language code (default: "en").
 #' @param verbose Logical: Print progress messages? (Default: FALSE)
 #'
-#' @return A list of lists, where each inner list contains the full details for one outbreak.
-#'   Returns an empty list if no outbreaks match the criteria or if errors occur during fetching.
+#' @return A tibble containing the combined details for all successfully fetched outbreaks.
+#'   Columns include outbreak details, administrative divisions, and species quantities.
+#'   Returns an empty tibble if no outbreaks match the criteria or if errors occur during fetching.
 #'   Returns NULL if the initial event or location fetch fails critically.
 #' @examples
 #' \dontrun{
@@ -748,5 +751,124 @@ get_woah_outbreaks_full_info <- function(start_date,
 
   if (verbose) message("--- Full Outbreak Information Fetch Complete ---")
 
-  return(successful_details)
+  # --- 5. Process Details List into a Tibble ---
+  if (verbose) message("Step 5: Processing fetched details into a table...")
+
+  processed_data <- tryCatch({
+    # Use map_dfr for robust row-binding, handling potential variations
+    map_dfr(successful_details, ~ {
+      # Extract main outbreak info safely
+      outbreak_info <- .x$outbreak %||% list()
+      # Extract species quantities safely
+      species_quantities_list <- .x$speciesQuantities %||% list()
+      # Extract admin divisions safely
+      admin_divisions_list <- .x$adminDivisions %||% list()
+
+      # Create a base tibble for this outbreak
+      base_tbl <- tibble(
+        outbreakId = outbreak_info$outbreakId %||% NA_integer_,
+        reportId = outbreak_info$createdByReportId %||% NA_integer_, # Get reportId from details if possible
+        oieReference = outbreak_info$oieReference %||% NA_character_,
+        location = outbreak_info$location %||% NA_character_,
+        latitude = outbreak_info$latitude %||% NA_real_,
+        longitude = outbreak_info$longitude %||% NA_real_,
+        isLocationApprox = outbreak_info$isLocationApprox %||% NA,
+        epiUnitType = outbreak_info$epiUnitType.translation %||% NA_character_,
+        isCluster = outbreak_info$isCluster %||% NA,
+        clusterCount = outbreak_info$clusterCount %||% NA_integer_,
+        startDate = outbreak_info$startDate %||% NA_character_, # Keep as char for now
+        endDate = outbreak_info$endDate %||% NA_character_ # Keep as char for now
+      )
+
+      # Process species quantities (can be multiple rows per outbreak)
+      if (length(species_quantities_list) > 0 && is.data.frame(species_quantities_list)) {
+         species_tbl <- species_quantities_list %>%
+           as_tibble() %>%
+           select(
+             speciesName = totalQuantities.speciesName,
+             isWild = totalQuantities.isWild,
+             susceptible = totalQuantities.susceptible,
+             cases = totalQuantities.cases,
+             deaths = totalQuantities.deaths,
+             killed = totalQuantities.killed,
+             slaughtered = totalQuantities.slaughtered,
+             vaccinated = totalQuantities.vaccinated,
+             # Include new quantities if needed, prefixing names
+             new_susceptible = newQuantities.susceptible,
+             new_cases = newQuantities.cases,
+             new_deaths = newQuantities.deaths,
+             new_killed = newQuantities.killed,
+             new_slaughtered = newQuantities.slaughtered,
+             new_vaccinated = newQuantities.vaccinated
+           ) %>%
+           # Add outbreakId for joining back later if needed, or just repeat base_tbl rows
+           mutate(outbreakId = base_tbl$outbreakId) # Add outbreakId to link
+      } else {
+        # Create an empty placeholder if no species data
+        species_tbl <- tibble(
+            outbreakId = base_tbl$outbreakId, # Ensure outbreakId exists
+            speciesName = NA_character_, isWild = NA, susceptible = NA_integer_,
+            cases = NA_integer_, deaths = NA_integer_, killed = NA_integer_,
+            slaughtered = NA_integer_, vaccinated = NA_integer_,
+            new_susceptible = NA_integer_, new_cases = NA_integer_, new_deaths = NA_integer_,
+            new_killed = NA_integer_, new_slaughtered = NA_integer_, new_vaccinated = NA_integer_
+        )
+      }
+
+      # Process admin divisions (usually multiple levels)
+      if (length(admin_divisions_list) > 0 && is.data.frame(admin_divisions_list)) {
+          admin_tbl <- admin_divisions_list %>%
+              as_tibble() %>%
+              select(adminLevel, adminName = name) %>%
+              # Create columns like adminLevel_1, adminLevel_2
+              mutate(adminLevelName = paste0("adminLevel_", adminLevel)) %>%
+              select(-adminLevel) %>%
+              # Pivot wider - handle cases with missing levels?
+              # Use distinct to avoid issues if API returns duplicates?
+              distinct() %>%
+              tidyr::pivot_wider(names_from = adminLevelName, values_from = adminName) %>%
+              # Add outbreakId for joining
+              mutate(outbreakId = base_tbl$outbreakId)
+
+      } else {
+          admin_tbl <- tibble(outbreakId = base_tbl$outbreakId) # Empty tibble with ID
+      }
+
+      # Combine base info with species and admin info
+      # Join species first (can create multiple rows)
+      combined <- left_join(base_tbl, species_tbl, by = "outbreakId", relationship = "many-to-many") # Should be one-to-many if species_tbl is correct
+      # Join admin info (should be one row per outbreak)
+      combined <- left_join(combined, admin_tbl, by = "outbreakId")
+
+      return(combined)
+
+    }, .id = NULL) # .id = NULL as we have outbreakId inside
+
+  }, error = function(e) {
+      message("Error processing the fetched details list into a table: ", e$message)
+      return(tibble()) # Return empty tibble on processing error
+  })
+
+
+  # --- 6. Final Join and Cleanup ---
+  # Join the processed details back with the initial context (country, disease, etc.)
+  # Use the 'successful_pairs' tibble which has the context linked to the successful fetches
+  final_table <- left_join(
+      successful_pairs %>% select(reportId, outbreakId, eventId, country, disease), # Context from successful pairs
+      processed_data,                                                              # Processed details
+      by = c("reportId", "outbreakId")                                             # Join keys
+  ) %>%
+  # Relocate columns for better readability
+  relocate(eventId, reportId, outbreakId, country, disease, location, longitude, latitude, startDate, endDate) %>%
+  # Convert date strings
+  mutate(across(any_of(c("startDate", "endDate", "outbreak_startDate")), ~ suppressWarnings(as.Date(sub("T.*", "", .x))))) %>% # Extract date part
+  # Ensure consistent types for numeric columns that might be all NA
+  mutate(across(any_of(c("susceptible", "cases", "deaths", "killed", "slaughtered", "vaccinated",
+                       "new_susceptible", "new_cases", "new_deaths", "new_killed", "new_slaughtered", "new_vaccinated")),
+                ~ as.integer(.x)))
+
+  if (verbose) message(sprintf("Finished processing. Returning table with %d rows.", nrow(final_table)))
+  if (verbose) message("--- Full Outbreak Information Fetch Complete ---")
+
+  return(final_table)
 }
