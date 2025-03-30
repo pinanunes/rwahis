@@ -520,54 +520,89 @@ get_woah_outbreaks <- function(start_date,
 #' @importFrom purrr pluck map_dfr possibly list_assign map
 #' @noRd
 # --- Helper Function: safe_extract_to_tibble (Internal) ---
-# Safely extracts a named element from the main list, converts to tibble, adds IDs.
+# Safely extracts a named element from the main list, converts to a tibble, adds IDs.
+# Handles single records (like outbreak) and lists of records (like adminDivisions).
+# @importFrom tibble as_tibble tibble
+# @importFrom purrr map_dfr pluck map
+# @importFrom dplyr relocate select
 safe_extract_to_tibble <- function(data_list, element_name, outbreak_id, report_id) {
   element <- purrr::pluck(data_list, element_name)
   id_cols <- list(outbreakId = outbreak_id, reportId = report_id) # Store IDs
 
-  # Handle NULL or non-list elements gracefully
+  # --- Initial Checks ---
   if (is.null(element) || !is.list(element)) {
-    # Return an empty tibble structure if element is missing or invalid type
-    # We don't know the columns, so just return IDs
     return(tibble::tibble(outbreakId = integer(0), reportId = integer(0)))
   }
-
-  # Handle empty lists
   if (length(element) == 0) {
-     # Return empty tibble with IDs if element is an empty list
      return(tibble::tibble(outbreakId = integer(0), reportId = integer(0)))
   }
 
-  # Attempt conversion based on structure
+  # --- Convert based on Element Name ---
+  # Wrap the entire df creation logic in tryCatch
   df <- tryCatch({
-    # Check if it's a list of lists (potential multiple rows) or a single named list (single row)
-    is_list_of_lists <- all(sapply(element, is.list)) && !is.data.frame(element)
+      # Explicitly handle known single-record elements by manually plucking fields
+      if (element_name == "outbreak") {
+          # Manually construct the outbreak tibble, plucking each field safely.
+          tibble::tibble(
+              areaId = purrr::pluck(element, "areaId", .default = NA_integer_),
+              oieReference = purrr::pluck(element, "oieReference", .default = NA_character_),
+              nationalReference = purrr::pluck(element, "nationalReference", .default = NA_character_),
+              disease = purrr::pluck(element, "disease"), # Pluck directly, might be NULL or list
+              latitude = purrr::pluck(element, "latitude", .default = NA_real_),
+              longitude = purrr::pluck(element, "longitude", .default = NA_real_),
+              location = purrr::pluck(element, "location", .default = NA_character_),
+              isLocationApprox = purrr::pluck(element, "isLocationApprox", .default = NA),
+              epiUnitType = purrr::pluck(element, "epiUnitType"), # Pluck directly, might be list
+              isCluster = purrr::pluck(element, "isCluster", .default = NA),
+              clusterCount = purrr::pluck(element, "clusterCount", .default = NA_integer_),
+              startDate = purrr::pluck(element, "startDate", .default = NA_character_),
+              endDate = purrr::pluck(element, "endDate", .default = NA_character_),
+              createdByReportId = purrr::pluck(element, "createdByReportId", .default = NA_integer_),
+              lastUpdateReportId = purrr::pluck(element, "lastUpdateReportId", .default = NA_integer_),
+              description = purrr::pluck(element, "description") # Pluck directly, might be list
+         )
+      } else if (element_name == "quantityUnit") {
+          # Manually construct quantityUnit tibble
+          tibble::tibble(
+               id = purrr::pluck(element, "id", .default = NA_integer_),
+               keyValue = purrr::pluck(element, "keyValue", .default = NA_character_),
+               translation = purrr::pluck(element, "translation", .default = NA_character_),
+               description = purrr::pluck(element, "description", .default = NA_character_) # Pluck safely
+          )
+      } else {
+         # Assume others are lists of records (like adminDivisions, speciesQuantities, etc.)
+         # Use map_dfr for robustness. Handles empty lists correctly.
+         purrr::map_dfr(element, tibble::as_tibble, .id = NULL)
+      }
+  }, error = function(e) { # Error handler for the tryCatch
+      warning(sprintf("Could not convert element '%s' to tibble for outbreak %d, report %d. Error: %s",
+                      element_name, outbreak_id, report_id, e$message))
+      # Return empty tibble with IDs on conversion error
+      return(tibble::tibble(outbreakId = integer(0), reportId = integer(0)))
+  }) # End of tryCatch block
 
-    if (is_list_of_lists) {
-      # Use map_dfr for robustness with potentially varying structures within the list
-      purrr::map_dfr(element, ~ tibble::as_tibble(.x), .id = NULL)
-    } else if (!is.data.frame(element)) {
-      # Assume it's a single named list, convert to single-row tibble
-      tibble::as_tibble(element)
-    } else {
-      # It's already a data frame
-      tibble::as_tibble(element)
-    }
-  }, error = function(e) {
-    warning(sprintf("Could not convert element '%s' to tibble for outbreak %d, report %d. Error: %s",
-                    element_name, outbreak_id, report_id, e$message))
-    # Return empty tibble with IDs on conversion error
-    return(tibble::tibble(outbreakId = integer(0), reportId = integer(0)))
-  })
-
-  # Add IDs if conversion was successful and resulted in rows
+  # Add IDs using standard assignment AFTER df is created
   if (nrow(df) > 0) {
-    df <- dplyr::bind_cols(tibble::tibble(!!!id_cols, .rows = nrow(df)), df)
-    # Optional: Relocate IDs to front if desired, but bind_cols puts them there anyway
-    # df <- dplyr::relocate(df, outbreakId, reportId)
+    df$outbreakId <- outbreak_id
+    df$reportId <- report_id
+    # Relocate IDs to the front
+    df <- dplyr::relocate(df, outbreakId, reportId)
   } else {
      # If conversion resulted in 0 rows (e.g. from empty list), ensure ID columns exist
+     # Create an empty tibble but try to preserve column names/types if possible from 'element'
+     # This part is complex, let's stick to the basic empty structure for now.
      df <- tibble::tibble(outbreakId = integer(0), reportId = integer(0))
+     # If the original element was a list, try to add empty columns matching its names
+     if (is.list(element) && length(names(element)) > 0) {
+        for(col_name in names(element)) {
+            # Avoid overwriting existing ID columns if they somehow existed in element
+            if (!col_name %in% c("outbreakId", "reportId")) {
+                 # Assign an empty vector of a default type (e.g., character)
+                 # A more robust solution would infer type, but this is safer for now
+                 df[[col_name]] <- character(0)
+            }
+        }
+     }
   }
 
   return(df)
@@ -695,56 +730,133 @@ get_woah_outbreak_details <- function(report_id, outbreak_id, language = "en", v
           })
       }
 
-      # Unnest step-by-step, preserving IDs
-      sq_total <- safe_unnest(sq_raw, "totalQuantities")
-      sq_new <- safe_unnest(sq_raw, "newQuantities")
-      sq_type <- safe_unnest(sq_raw, "speciesType")
+      # Start with the tibble including IDs
+      sq_processed <- sq_raw
 
-      # Combine the unnested parts with the original IDs
-      # Start with IDs
-      sq_processed <- sq_raw %>% select(outbreakId, reportId)
+      # Define columns to potentially unnest
+      cols_to_unnest <- c("totalQuantities", "newQuantities", "speciesType")
 
-      # Add columns from unnested parts if they exist and have rows
-      if (nrow(sq_total) > 0) sq_processed <- dplyr::bind_cols(sq_processed, sq_total %>% select(-any_of(c("outbreakId", "reportId"))))
-      if (nrow(sq_new) > 0) sq_processed <- dplyr::bind_cols(sq_processed, sq_new %>% select(-any_of(c("outbreakId", "reportId"))))
-      if (nrow(sq_type) > 0) sq_processed <- dplyr::bind_cols(sq_processed, sq_type %>% select(-any_of(c("outbreakId", "reportId"))))
+      for (col in cols_to_unnest) {
+          # Check if column exists and is actually a list column before unnesting
+          if (col %in% names(sq_processed) && is.list(sq_processed[[col]])) {
+              sq_processed <- tryCatch({
+                  # Use names_repair to handle potential name clashes during unnesting
+                  tidyr::unnest_wider(sq_processed, col = {{col}}, names_sep = "_", names_repair = "unique")
+              }, error = function(e) {
+                  warning(sprintf("Failed to unnest column '%s' in speciesQuantities: %s", col, e$message))
+                  return(sq_processed) # Return original if unnest fails
+              })
+          }
+      }
+      # Clean up potential duplicate names from unnesting (e.g., ...1, ...2)
+      sq_processed <- sq_processed %>%
+          dplyr::rename_with(~gsub("\\.\\.\\.[0-9]+$", "", .), dplyr::matches("\\.\\.\\.[0-9]+$"))
 
-      # Assign back to the list
-      details_list$speciesQuantities <- sq_processed
+      # Assign back to the list, ensuring IDs are relocated to front
+      details_list$speciesQuantities <- dplyr::relocate(sq_processed, any_of(c("outbreakId", "reportId")))
   } else {
       # Ensure speciesQuantities exists even if empty, with ID columns
       details_list$speciesQuantities <- tibble::tibble(outbreakId = integer(0), reportId = integer(0))
   }
 
-  # Similar post-processing for 'outbreak' if needed (e.g., unnest epiUnitType, description)
+  # Post-processing for 'outbreak' table
   if ("outbreak" %in% names(details_list) && nrow(details_list$outbreak) > 0) {
       if(verbose) message("Post-processing outbreak...")
-      details_list$outbreak <- details_list$outbreak %>%
-          tidyr::unnest_wider(any_of(c("epiUnitType", "description")), names_sep = "_", names_repair = "unique") %>%
-          # Rename potentially duplicated columns after unnesting
-          dplyr::rename_with(~gsub("\\.\\.\\.[0-9]+$", "", .), dplyr::matches("\\.\\.\\.[0-9]+$"))
-  } else {
-       details_list$outbreak <- tibble::tibble(outbreakId = integer(0), reportId = integer(0))
-  }
+      # Start with the tibble including IDs
+      outbreak_processed <- details_list$outbreak
 
-   # Post-process diagnosticMethods if needed
+      # Define columns to potentially unnest
+      cols_to_unnest_ob <- c("epiUnitType", "description", "disease")
+
+      for (col in cols_to_unnest_ob) {
+          # Check if column exists and is actually a list column before unnesting
+          if (col %in% names(outbreak_processed) && is.list(outbreak_processed[[col]])) {
+              # Ensure the list column isn't empty before attempting unnest
+              if(length(outbreak_processed[[col]]) > 0 && !all(sapply(outbreak_processed[[col]], is.null))) {
+                  outbreak_processed <- tryCatch({
+                      # Use names_repair to handle potential name clashes
+                      tidyr::unnest_wider(outbreak_processed, col = {{col}}, names_sep = "_", names_repair = "unique")
+                  }, error = function(e) {
+                      warning(sprintf("Failed to unnest column '%s' in outbreak: %s", col, e$message))
+                      # If 'disease' fails, try to keep the column but maybe fill problematic rows with NA structure?
+                      # For now, just return original on error to avoid losing data.
+                      return(outbreak_processed)
+                  })
+              } else {
+                 # If the list column exists but is empty or all NULLs, handle appropriately
+                 # Option 1: Remove the column
+                 # outbreak_processed <- outbreak_processed %>% dplyr::select(-dplyr::all_of(col))
+                 # Option 2: Keep it as is (might be list())
+                 # Option 3: Ensure it has standard NA structure if possible (complex)
+                 # Let's keep it for now.
+                 if(verbose) message(sprintf("Skipping unnest for empty/NULL list column '%s' in outbreak.", col))
+              }
+          } else if (col == "disease" && col %in% names(outbreak_processed) && is.null(outbreak_processed[[col]][[1]])) {
+             # Handle case where disease column exists but is NULL (e.g., list(NULL))
+             # Add placeholder columns if they don't exist after potential previous unnesting
+             if (!"disease_id" %in% names(outbreak_processed)) outbreak_processed$disease_id <- NA
+             if (!"disease_keyValue" %in% names(outbreak_processed)) outbreak_processed$disease_keyValue <- NA_character_
+             # Remove the original list(NULL) column
+             outbreak_processed <- outbreak_processed %>% dplyr::select(-dplyr::all_of(col))
+             if(verbose) message("Handled NULL disease column by adding NA placeholders.")
+          }
+      }
+      # Clean up potential duplicate names from unnesting (e.g., ...1, ...2)
+      outbreak_processed <- outbreak_processed %>%
+          dplyr::rename_with(~gsub("\\.\\.\\.[0-9]+$", "", .), dplyr::matches("\\.\\.\\.[0-9]+$"))
+
+      # Assign back, ensuring IDs are relocated to front
+      details_list$outbreak <- dplyr::relocate(outbreak_processed, any_of(c("outbreakId", "reportId")))
+  } # No else needed
+
+   # Post-process diagnosticMethods table
   if ("diagnosticMethods" %in% names(details_list) && nrow(details_list$diagnosticMethods) > 0) {
       if(verbose) message("Post-processing diagnosticMethods...")
-      details_list$diagnosticMethods <- details_list$diagnosticMethods %>%
-          tidyr::unnest_wider(any_of("nature"), names_sep = "_", names_repair = "unique") %>%
-          dplyr::rename_with(~gsub("\\.\\.\\.[0-9]+$", "", .), dplyr::matches("\\.\\.\\.[0-9]+$"))
-  } else {
-       details_list$diagnosticMethods <- tibble::tibble(outbreakId = integer(0), reportId = integer(0))
-  }
+      # Start with the tibble including IDs
+      dm_processed <- details_list$diagnosticMethods
+
+      # Define columns to potentially unnest
+      cols_to_unnest_dm <- c("nature")
+
+       for (col in cols_to_unnest_dm) {
+           # Check if column exists and is actually a list column before unnesting
+           if (col %in% names(dm_processed) && is.list(dm_processed[[col]])) {
+               # Ensure the list column isn't empty before attempting unnest
+               if(length(dm_processed[[col]]) > 0 && !all(sapply(dm_processed[[col]], is.null))) {
+                   dm_processed <- tryCatch({
+                       # Use names_repair to handle potential name clashes
+                       tidyr::unnest_wider(dm_processed, col = {{col}}, names_sep = "_", names_repair = "unique")
+                   }, error = function(e) {
+                       warning(sprintf("Failed to unnest column '%s' in diagnosticMethods: %s", col, e$message))
+                       return(dm_processed) # Return original if unnest fails
+                   })
+               } else {
+                   if(verbose) message(sprintf("Skipping unnest for empty/NULL list column '%s' in diagnosticMethods.", col))
+               }
+           }
+       }
+       # Clean up potential duplicate names from unnesting
+       dm_processed <- dm_processed %>%
+           dplyr::rename_with(~gsub("\\.\\.\\.[0-9]+$", "", .), dplyr::matches("\\.\\.\\.[0-9]+$"))
+
+       # Assign back, ensuring IDs are relocated to front
+      details_list$diagnosticMethods <- dplyr::relocate(dm_processed, any_of(c("outbreakId", "reportId")))
+  } # No else needed
 
   # Ensure all expected tables exist in the final list, even if empty
+  # This loop remains useful to guarantee the final list structure
   expected_tables <- c("outbreak", "adminDivisions", "quantityUnit", "speciesQuantities",
                        "controlMeasures", "diagnosticMethods", "additionalMeasures",
                        "measuresNotImplemented")
   for (tbl_name in expected_tables) {
       if (!tbl_name %in% names(details_list)) {
+          # Ensure the tibble exists with ID columns even if the element was missing from API response
           details_list[[tbl_name]] <- tibble::tibble(outbreakId = integer(0), reportId = integer(0))
-          if(verbose) message(sprintf("Added empty tibble for missing element: %s", tbl_name))
+          if(verbose) message(sprintf("Added empty tibble structure for missing element: %s", tbl_name))
+      } else if (nrow(details_list[[tbl_name]]) == 0 && !all(c("outbreakId", "reportId") %in% names(details_list[[tbl_name]]))) {
+          # Ensure even empty tibbles derived from API have the ID columns defined
+          details_list[[tbl_name]] <- tibble::tibble(outbreakId = integer(0), reportId = integer(0))
+           if(verbose) message(sprintf("Ensured empty tibble structure for empty element: %s", tbl_name))
       }
   }
 
@@ -764,10 +876,12 @@ get_woah_outbreak_details <- function(report_id, outbreak_id, language = "en", v
 #' of tibbles, where each tibble corresponds to a specific part of the outbreak data
 #' (e.g., 'outbreak', 'adminDivisions', 'speciesQuantities').
 #'
-#' @importFrom dplyr inner_join select distinct bind_rows relocate filter any_of
-#' @importFrom purrr map map2 possibly discard set_names pluck %||% list_rbind
-#' @importFrom tibble tibble
+#' @importFrom dplyr inner_join select distinct bind_rows relocate filter any_of group_by summarise first
+#' @importFrom purrr map map2 possibly discard set_names pluck %||% list_rbind keep some map_dfr
+#' @importFrom tidyr unnest_wider pivot_wider
+#' @importFrom tibble tibble as_tibble
 #' @importFrom rlang abort
+#' @importFrom utils str head
 #'
 #' @param start_date Character string or Date object for the start of the event date range (YYYY-MM-DD).
 #' @param end_date Character string or Date object for the end of the event date range (YYYY-MM-DD).
@@ -818,7 +932,8 @@ get_woah_outbreaks_full_info <- function(start_date,
     "measuresNotImplemented"
   )
   # Initialize result list with empty tibbles for expected structure
-  empty_result_list <- purrr::map(expected_tables, ~ tibble::tibble()) %>%
+  # Ensure the empty tibbles have the ID columns defined from the start
+  empty_result_list <- purrr::map(expected_tables, ~ tibble::tibble(outbreakId = integer(0), reportId = integer(0))) %>%
                        purrr::set_names(expected_tables)
 
   if (verbose) message("--- Starting Full Outbreak Information Fetch (Multi-Table Output) ---")
@@ -913,40 +1028,39 @@ get_woah_outbreaks_full_info <- function(start_date,
   # Use expected_tables defined earlier for robustness
   table_names <- expected_tables
 
-  # Use map to iterate through table names, pluck the corresponding tibble from each list, and bind_rows
+  # Use map to iterate through table names, pluck the corresponding tibble from each list, and bind them
   combined_tables_list <- map(table_names, function(tbl_name) {
     if (verbose) message(sprintf("  Combining table: '%s'", tbl_name))
+
     # Pluck the tibble with name `tbl_name` from each element in `successful_details_lists`
-    list_of_tibbles_for_name <- map(successful_details_lists, ~ purrr::pluck(.x, tbl_name))
+    list_of_tibbles_for_name <- map(successful_details_lists, ~ purrr::pluck(.x, tbl_name, .default = NULL)) # Add .default = NULL
 
-    # Filter out any NULLs or non-dataframes that might have slipped through (shouldn't happen with safe_extract_to_tibble)
-    valid_tibbles <- keep(list_of_tibbles_for_name, ~ is.data.frame(.x) && nrow(.x) > 0)
+    # Filter out NULLs and ensure they are data frames before binding
+    # Also ensure they have the ID columns - safe_extract_to_tibble should guarantee this
+    valid_tibbles <- keep(list_of_tibbles_for_name, ~ !is.null(.x) &&
+                                                      is.data.frame(.x) &&
+                                                      all(c("outbreakId", "reportId") %in% names(.x)))
 
+    # Check if any valid tibbles remain after filtering
     if (length(valid_tibbles) == 0) {
-        if (verbose) message(sprintf("    No data found for table '%s' in any outbreak.", tbl_name))
-        # Return an empty tibble with known ID columns if possible, otherwise just empty
-        base_empty <- tibble::tibble(outbreakId = integer(0), reportId = integer(0))
-        # Try to get column names from the first list if available, otherwise return base empty
-         first_list_tbl <- purrr::pluck(successful_details_lists, 1, tbl_name, .default = NULL)
-         if (!is.null(first_list_tbl) && is.data.frame(first_list_tbl)) {
-             # Create empty tibble with same columns as the first instance found
-             empty_cols <- purrr::map(first_list_tbl, ~ vector(class(.), 0))
-             return(tibble::as_tibble(empty_cols))
-         } else {
-             return(base_empty) # Fallback
-         }
+        if (verbose) message(sprintf("    No valid data rows (with IDs) found for table '%s'.", tbl_name))
+        # Return the standard empty structure with IDs
+        return(tibble::tibble(outbreakId = integer(0), reportId = integer(0)))
     }
 
-    # Combine the valid tibbles using bind_rows (handles differing columns by filling with NA)
-    # Using purrr::list_rbind for potentially better performance and name repair options
+    # Combine using dplyr::bind_rows - this should now preserve ID columns as they exist in all inputs
     combined_tbl <- tryCatch({
-        purrr::list_rbind(valid_tibbles)
-        # dplyr::bind_rows(valid_tibbles) # Alternative
+        dplyr::bind_rows(valid_tibbles)
     }, error = function(e) {
-        warning(sprintf("Error combining tibbles for '%s': %s. Returning empty tibble.", tbl_name, e$message))
-        # Return empty tibble with IDs on error
-        return(tibble::tibble(outbreakId = integer(0), reportId = integer(0)))
+        warning(sprintf("Error using bind_rows for '%s': %s. Returning empty tibble.", tbl_name, e$message))
+        return(tibble::tibble(outbreakId = integer(0), reportId = integer(0))) # Return standard empty on error
     })
+
+    # Optional: Double-check and relocate IDs just in case, though should be unnecessary now
+    if (!("outbreakId" %in% names(combined_tbl))) combined_tbl$outbreakId <- NA_integer_
+    if (!("reportId" %in% names(combined_tbl))) combined_tbl$reportId <- NA_integer_
+    combined_tbl <- dplyr::relocate(combined_tbl, any_of(c("outbreakId", "reportId")))
+
 
     if (verbose) message(sprintf("    Combined '%s' table has %d rows.", tbl_name, nrow(combined_tbl)))
     return(combined_tbl)
