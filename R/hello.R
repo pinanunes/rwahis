@@ -657,10 +657,11 @@ get_woah_outbreaks_full_info <- function(start_date,
                                          language = "en",
                                          verbose = FALSE) {
 
-  # Helper function to safely create tibbles, returning empty if input is bad
+  # *** ADD THIS HELPER FUNCTION DEFINITION HERE ***
   safe_tibble <- function(...) {
-    tryCatch(tibble(...), error = function(e) tibble())
+    tryCatch(tibble::tibble(...), error = function(e) tibble::tibble())
   }
+  # *** END ADDED HELPER FUNCTION ***
 
   if (verbose) message("--- Starting Full Outbreak Information Fetch ---")
 
@@ -701,13 +702,12 @@ get_woah_outbreaks_full_info <- function(start_date,
   if (n_successful == 0) { if (verbose) message("No details fetched successfully."); return(tibble()) }
 
   # --- 5. Process Details List into a Tibble ---
-  if (verbose) message("Step 5: Processing fetched details into a table...")
+if (verbose) message("Step 5: Processing fetched details into a table...")
 
-  # Counter for debugging the first item specifically
   item_counter <- 0 # Initialize counter outside map_dfr
 
   processed_data <- map_dfr(successful_details, function(detail_item) {
-      item_counter <<- item_counter + 1 # Increment counter (use <<- for assignment outside function scope)
+      item_counter <<- item_counter + 1
       is_first_item <- (item_counter == 1)
 
       # --- START DEBUG BLOCK (for first item or general verbose) ---
@@ -724,7 +724,7 @@ get_woah_outbreaks_full_info <- function(start_date,
 
       # Basic checks
       if (!is.list(detail_item) || is.null(detail_item$outbreak)) {
-          if (verbose) message("Skipping invalid detail item (not a list or missing 'outbreak').")
+          # ... (skip message) ...
           return(tibble())
       }
 
@@ -743,7 +743,6 @@ get_woah_outbreaks_full_info <- function(start_date,
           startDate = pluck(detail_item, "outbreak", "startDate", .default = NA_character_),
           endDate = pluck(detail_item, "outbreak", "endDate", .default = NA_character_)
       ) %>% filter(!is.na(outbreakId))
-
       # --- START DEBUG BLOCK ---
       if (verbose || is_first_item) {
           if(nrow(outbreak_info) == 0) message(">> Failed to extract valid base outbreak_info.")
