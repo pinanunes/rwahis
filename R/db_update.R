@@ -118,7 +118,7 @@ update_woah_db <- function(start_date,
                            disease_name = NULL,
                            db_params,
                            batch_interval = "1 month",
-                           table_prefix = "woah_",
+                           table_prefix = "wahis_",
                            language = "en",
                            verbose = TRUE) {
 
@@ -486,7 +486,11 @@ end_dates <- (start_dates +
                             new_locations <- locations_valid %>% filter(!(.data[[pk_col]] %in% existing_ids))
 
                             if (nrow(new_locations) > 0) {
-                                if (verbose) message(sprintf("  Found %d new location records to append.", nrow(new_locations)))
+                                if (verbose) {
+                                    message(sprintf("  Found %d new location records to append.", nrow(new_locations)))
+                                    message("  First few rows of locations data:")
+                                    print(head(new_locations))
+                                }
                                 # Convert to sf object
                                 locations_sf <- sf::st_as_sf(new_locations, coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
                                  
