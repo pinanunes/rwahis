@@ -489,9 +489,9 @@ end_dates <- (start_dates +
                                 if (verbose) message(sprintf("  Found %d new location records to append.", nrow(new_locations)))
                                 # Convert to sf object
                                 locations_sf <- sf::st_as_sf(new_locations, coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
-                                
-                                # Write using DBI with explicit transaction handling
-                                tryCatch({
+                                 
+                                 # Write using DBI with explicit transaction handling
+                                 tryCatch({
                                     DBI::dbWithTransaction(conn, {
                                       # Ensure sf package is loaded
                                       if (!requireNamespace("sf", quietly = TRUE)) {
@@ -499,6 +499,7 @@ end_dates <- (start_dates +
                                       }
                                       # Convert sf object to data frame
                                       locations_df <- as.data.frame(locations_sf)
+                                      if (verbose) message(sprintf("  Writing %d new records to %s...", nrow(new_locations), target_table))
                                       DBI::dbWriteTable(
                                         conn,
                                         name = target_table,
@@ -518,6 +519,7 @@ end_dates <- (start_dates +
                                       tryCatch({
                                         # Convert sf object to data frame for each record
                                         location_df <- as.data.frame(locations_sf[i,])
+                                        if (verbose) message(sprintf("  Writing record %d to %s...", i, target_table))
                                         DBI::dbWriteTable(
                                           conn,
                                           name = target_table,
@@ -525,6 +527,7 @@ end_dates <- (start_dates +
                                           append = TRUE,
                                           row.names = FALSE
                                         )
+                                        if (verbose) message(sprintf("  Successfully wrote record %d to %s.", i, target_table))
                                         success_count <- success_count + 1
                                       }, error = function(e) {
                                         if (verbose) message(sprintf("  Failed to write record %d: %s", i, e$message))
@@ -682,6 +685,7 @@ end_dates <- (start_dates +
                 if (verbose) message(sprintf("  Found %d potential new records to append.", nrow(new_data)))
                 # Ensure column names match DB (might need renaming/selection)
                 # For now, assume column names are compatible after processing
+                if (verbose) message(sprintf("  Writing %d records to %s...", nrow(new_data), target_table))
                 DBI::dbWriteTable(conn, name = target_table, value = new_data, append = TRUE, row.names = FALSE)
                 if (verbose) message(sprintf("  Appended %d records to %s.", nrow(new_data), target_table))
             } else {
