@@ -473,12 +473,15 @@ end_dates <- (start_dates +
                             filter(!is.na(longitude), !is.na(latitude), !is.na(outbreak_id))
 
                         if (nrow(locations_valid) > 0) {
-                            # Check existing IDs using outbreak_id (not pk_col which may be outdated)
-                            existing_ids_query <- sprintf("SELECT outbreak_id FROM %s WHERE outbreak_id = ANY($1)", target_table)
-                            existing_ids <- tryCatch(
-                                DBI::dbGetQuery(conn, existing_ids_query, params = list(unique(locations_valid$outbreak_id)))$outbreak_id,
-                                error = function(e) integer(0) # Return empty if query fails
-                            )
+                            # Check existing IDs using outbreak_id with proper error handling
+                            existing_ids <- tryCatch({
+                                query <- sprintf("SELECT outbreak_id FROM %s WHERE outbreak_id = ANY($1)", target_table)
+                                result <- DBI::dbGetQuery(conn, query, params = list(unique(locations_valid$outbreak_id)))
+                                if (nrow(result) > 0) result$outbreak_id else integer(0)
+                            }, error = function(e) {
+                                if (verbose) message(sprintf("Error checking existing IDs: %s", e$message))
+                                integer(0)
+                            })
 
                             new_locations <- locations_valid %>% filter(!(.data[[pk_col]] %in% existing_ids))
 
@@ -487,12 +490,39 @@ end_dates <- (start_dates +
                                 # Convert to sf object
                                 locations_sf <- sf::st_as_sf(new_locations, coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
                                 
-                                # Write using sf::st_write with append = TRUE
+                                # Write using DBI with explicit transaction handling
                                 tryCatch({
-                                    sf::st_write(locations_sf, dsn = conn, layer = target_table, append = TRUE, quiet = !verbose)
-                                    if (verbose) message(sprintf("  Appended %d new records to %s.", nrow(new_locations), target_table))
+                                    DBI::dbWithTransaction(conn, {
+                                        DBI::dbWriteTable(
+                                            conn, 
+                                            name = target_table,
+                                            value = as.data.frame(locations_sf),
+                                            append = TRUE,
+                                            row.names = FALSE
+                                        )
+                                        if (verbose) message(sprintf("  Appended %d new records to %s.", nrow(new_locations), target_table))
+                                    })
                                 }, error = function(e) {
                                     warning(sprintf("Failed to write to %s: %s", target_table, e$message))
+                                    if (verbose) message("Attempting to write records individually...")
+                                    
+                                    # Fallback to writing records one by one
+                                    success_count <- 0
+                                    for (i in seq_len(nrow(locations_sf))) {
+                                        tryCatch({
+                                            DBI::dbWriteTable(
+                                                conn,
+                                                name = target_table,
+                                                value = as.data.frame(locations_sf[i,]),
+                                                append = TRUE,
+                                                row.names = FALSE
+                                            )
+                                            success_count <- success_count + 1
+                                        }, error = function(e) {
+                                            if (verbose) message(sprintf("  Failed to write record %d: %s", i, e$message))
+                                        })
+                                    }
+                                    if (verbose) message(sprintf("  Successfully wrote %d/%d records", success_count, nrow(locations_sf)))
                                 })
                             } else {
                                 if (verbose) message("  No new location records to append for this batch.")
