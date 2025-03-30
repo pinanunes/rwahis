@@ -348,7 +348,7 @@ update_woah_db <- function(start_date,
     # Create sequence of start dates
     start_dates <- seq(start_date, end_date, by = batch_interval)
     # Create corresponding end dates (handle end of sequence)
-    end_dates <- (start_dates %m+% months(if(grepl("month", unit)) num else 0) %m+%
+end_dates <- (start_dates %m+% dmonths(if(grepl("month", unit)) num else 0) %m+%
                                 weeks(if(grepl("week", unit)) num else 0) %m+%
                                 days(if(grepl("day", unit)) num else 0)) - lubridate::days(1)
     # Ensure last end date doesn't exceed overall end_date
