@@ -415,15 +415,14 @@ end_dates <- (start_dates +
                  verbose = verbose # Pass through verbose setting
              )
              if (verbose && !is.null(details_list)) {
-                 message(sprintf("  Retrieved details for %d outbreaks", 
-                               ifelse(is.null(details_list$outbreak), 0, nrow(details_list$outbreak))))
+                 total_outbreaks <- sum(sapply(details_list, function(x) if(is.data.frame(x)) nrow(x) else 0))
+                 message(sprintf("  Retrieved details with %d total records across all tables", total_outbreaks))
              }
              if (is.null(details_list)) {
                  warning(sprintf("Failed to fetch full details for interval %s - %s despite finding locations. Skipping batch.", int_start, int_end))
-                 fetch_error <- TRUE
-             } else if (length(details_list) == 0 || is.null(details_list$outbreak) || nrow(details_list$outbreak) == 0) {
+                 fetch_error = TRUE
+             } else if (length(details_list) == 0) {
                  if (verbose) message("No outbreak details found for this interval.")
-                 # Potentially locations exist but details don't match? Continue loop.
                  next
              } else {
                  if (verbose) message(sprintf("Fetched details, including %d outbreak records.", nrow(details_list$outbreak)))
@@ -442,46 +441,51 @@ end_dates <- (start_dates +
     # --- Process and Write Data ---
     batch_success <- TRUE # Track success within the batch writing phase
 
-    # 1. Process and Write Locations
-    tryCatch({
-        if (nrow(locations_data) > 0) {
-            target_table <- table_names$locations
-            pk_col <- "outbreakId"
-            if (verbose) message(sprintf("Processing table: %s", target_table))
+            # 1. Process and Write Locations
+            tryCatch({
+                if (nrow(locations_data) > 0) {
+                    target_table <- table_names$locations
+                    pk_col <- "outbreakId"
+                    if (verbose) message(sprintf("Processing table: %s", target_table))
 
-            # Ensure required columns exist
-            if (!all(c("longitude", "latitude", pk_col) %in% names(locations_data))) {
-                 warning(sprintf("Required columns ('longitude', 'latitude', '%s') missing in locations data for this batch. Skipping write.", pk_col))
-            } else {
-                # Filter valid coordinates and ensure PK is not NA
-                locations_valid <- locations_data %>%
-                    filter(!is.na(longitude), !is.na(latitude), !is.na(.data[[pk_col]]))
-
-                if (nrow(locations_valid) > 0) {
-                    # Check existing IDs
-                    existing_ids_query <- sprintf("SELECT %s FROM %s WHERE %s = ANY($1)", pk_col, target_table, pk_col)
-                    existing_ids <- DBI::dbGetQuery(conn, existing_ids_query, params = list(unique(locations_valid[[pk_col]])))[[pk_col]]
-
-                    new_locations <- locations_valid %>% filter(!(.data[[pk_col]] %in% existing_ids))
-
-                    if (nrow(new_locations) > 0) {
-                        if (verbose) message(sprintf("  Found %d new location records to append.", nrow(new_locations)))
-                        # Convert to sf object
-                        locations_sf <- sf::st_as_sf(new_locations, coords = c("longitude", "latitude"), crs = 4326, remove = FALSE) # Keep original lat/lon cols
-                        # Rename geometry column if needed by st_write (often 'geom' or 'geometry')
-                        # sf::st_geometry(locations_sf) <- "geom" # Example if needed
-
-                        # Write using sf::st_write with append = TRUE
-                        sf::st_write(locations_sf, dsn = conn, layer = target_table, append = TRUE, quiet = !verbose)
-                        if (verbose) message(sprintf("  Appended %d new records to %s.", nrow(new_locations), target_table))
+                    # Ensure required columns exist
+                    if (!all(c("longitude", "latitude", pk_col) %in% names(locations_data))) {
+                         warning(sprintf("Required columns ('longitude', 'latitude', '%s') missing in locations data for this batch. Skipping write.", pk_col))
                     } else {
-                        if (verbose) message("  No new location records to append for this batch.")
+                        # Filter valid coordinates and ensure PK is not NA
+                        locations_valid <- locations_data %>%
+                            filter(!is.na(longitude), !is.na(latitude), !is.na(.data[[pk_col]]))
+
+                        if (nrow(locations_valid) > 0) {
+                            # Check existing IDs
+                            existing_ids_query <- sprintf("SELECT %s FROM %s WHERE %s = ANY($1)", pk_col, target_table, pk_col)
+                            existing_ids <- tryCatch(
+                                DBI::dbGetQuery(conn, existing_ids_query, params = list(unique(locations_valid[[pk_col]])))[[pk_col]],
+                                error = function(e) integer(0) # Return empty if query fails
+                            )
+
+                            new_locations <- locations_valid %>% filter(!(.data[[pk_col]] %in% existing_ids))
+
+                            if (nrow(new_locations) > 0) {
+                                if (verbose) message(sprintf("  Found %d new location records to append.", nrow(new_locations)))
+                                # Convert to sf object
+                                locations_sf <- sf::st_as_sf(new_locations, coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
+                                
+                                # Write using sf::st_write with append = TRUE
+                                tryCatch({
+                                    sf::st_write(locations_sf, dsn = conn, layer = target_table, append = TRUE, quiet = !verbose)
+                                    if (verbose) message(sprintf("  Appended %d new records to %s.", nrow(new_locations), target_table))
+                                }, error = function(e) {
+                                    warning(sprintf("Failed to write to %s: %s", target_table, e$message))
+                                })
+                            } else {
+                                if (verbose) message("  No new location records to append for this batch.")
+                            }
+                        } else {
+                             if (verbose) message("  No valid location records with coordinates and IDs found in this batch.")
+                        }
                     }
-                } else {
-                     if (verbose) message("  No valid location records with coordinates and IDs found in this batch.")
                 }
-            }
-        }
     }, error = function(e) {
         warning(sprintf("Error processing/writing table '%s': %s", table_names$locations, e$message))
         batch_success <<- FALSE
