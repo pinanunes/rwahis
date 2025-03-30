@@ -493,37 +493,45 @@ end_dates <- (start_dates +
                                 # Write using DBI with explicit transaction handling
                                 tryCatch({
                                     DBI::dbWithTransaction(conn, {
-                                        DBI::dbWriteTable(
-                                            conn, 
-                                            name = target_table,
-                                            value = as.data.frame(locations_sf),
-                                            append = TRUE,
-                                            row.names = FALSE
-                                        )
-                                        if (verbose) message(sprintf("  Appended %d new records to %s.", nrow(new_locations), target_table))
+                                      # Ensure sf package is loaded
+                                      if (!requireNamespace("sf", quietly = TRUE)) {
+                                        stop("Package 'sf' is required but not installed.")
+                                      }
+                                      # Convert sf object to data frame
+                                      locations_df <- as.data.frame(locations_sf)
+                                      DBI::dbWriteTable(
+                                        conn,
+                                        name = target_table,
+                                        value = locations_df,
+                                        append = TRUE,
+                                        row.names = FALSE
+                                      )
+                                      if (verbose) message(sprintf("  Appended %d new records to %s.", nrow(new_locations), target_table))
                                     })
-                                }, error = function(e) {
+                                  }, error = function(e) {
                                     warning(sprintf("Failed to write to %s: %s", target_table, e$message))
                                     if (verbose) message("Attempting to write records individually...")
-                                    
+                                
                                     # Fallback to writing records one by one
                                     success_count <- 0
                                     for (i in seq_len(nrow(locations_sf))) {
-                                        tryCatch({
-                                            DBI::dbWriteTable(
-                                                conn,
-                                                name = target_table,
-                                                value = as.data.frame(locations_sf[i,]),
-                                                append = TRUE,
-                                                row.names = FALSE
-                                            )
-                                            success_count <- success_count + 1
-                                        }, error = function(e) {
-                                            if (verbose) message(sprintf("  Failed to write record %d: %s", i, e$message))
-                                        })
+                                      tryCatch({
+                                        # Convert sf object to data frame for each record
+                                        location_df <- as.data.frame(locations_sf[i,])
+                                        DBI::dbWriteTable(
+                                          conn,
+                                          name = target_table,
+                                          value = location_df,
+                                          append = TRUE,
+                                          row.names = FALSE
+                                        )
+                                        success_count <- success_count + 1
+                                      }, error = function(e) {
+                                        if (verbose) message(sprintf("  Failed to write record %d: %s", i, e$message))
+                                      })
                                     }
                                     if (verbose) message(sprintf("  Successfully wrote %d/%d records", success_count, nrow(locations_sf)))
-                                })
+                                  })
                             } else {
                                 if (verbose) message("  No new location records to append for this batch.")
                             }
