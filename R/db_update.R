@@ -383,13 +383,18 @@ end_dates <- (start_dates +
     fetch_error <- FALSE
 
     tryCatch({
-        if (verbose) message("Fetching locations...")
+        if (verbose) {
+            message(sprintf("\nFetching locations for %s to %s...", int_start, int_end))
+            if (!is.null(disease_name)) {
+                message(sprintf("  Disease filter: %s", disease_name))
+            }
+        }
         locations_data <- get_woah_outbreak_locations(
             start_date = int_start,
             end_date = int_end,
             disease_name = disease_name,
             language = language,
-            verbose = FALSE # Keep inner verbose off unless debugging batch
+            verbose = verbose # Pass through verbose setting
         )
 
         if (is.null(locations_data)) {
@@ -401,15 +406,18 @@ end_dates <- (start_dates +
             next
         } else {
              if (verbose) message(sprintf("Fetched %d location records.", nrow(locations_data)))
-             if (verbose) message("Fetching full details...")
-             # Pass the fetched locations/events to full_info? No, full_info refetches.
+             if (verbose) message("\nFetching full outbreak details...")
              details_list <- get_woah_outbreaks_full_info(
                  start_date = int_start,
                  end_date = int_end,
                  disease_name = disease_name,
                  language = language,
-                 verbose = FALSE # Keep inner verbose off
+                 verbose = verbose # Pass through verbose setting
              )
+             if (verbose && !is.null(details_list)) {
+                 message(sprintf("  Retrieved details for %d outbreaks", 
+                               ifelse(is.null(details_list$outbreak), 0, nrow(details_list$outbreak))))
+             }
              if (is.null(details_list)) {
                  warning(sprintf("Failed to fetch full details for interval %s - %s despite finding locations. Skipping batch.", int_start, int_end))
                  fetch_error <- TRUE
