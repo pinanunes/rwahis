@@ -3,7 +3,7 @@ Type: Package
 Title: A library to access WAHIS the global animal health reference database of the World Organization for Animal Health (WOAH)
 Version: 0.1.4
 Author: Telmo Nunes
-Maintainer: Telmo Nunes <yopinanunes@gmail.com>
+Maintainer: Telmo Nunes <pinanunes@gmail.com>
 Description: More about what it does (maybe more than one line)
     Use four spaces when indenting paragraphs within the Description.
 License: What license is it under?

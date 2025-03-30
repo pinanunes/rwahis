@@ -515,6 +515,13 @@ get_woah_outbreaks <- function(start_date,
 #' @return A list containing the detailed outbreak information, or NULL if an error occurs
 #'   or the outbreak is not found.
 #' @noRd
+# --- Function: get_woah_outbreak_details (Internal Helper) ---
+# Add imports if needed:
+# @importFrom httr GET modify_url add_headers stop_for_status content timeout status_code
+# @importFrom jsonlite fromJSON validate
+# @importFrom purrr %||%
+
+#' @noRd
 get_woah_outbreak_details <- function(report_id, outbreak_id, language = "en", verbose = FALSE) {
 
   # Input validation
@@ -530,47 +537,61 @@ get_woah_outbreak_details <- function(report_id, outbreak_id, language = "en", v
   api_url <- modify_url(url = file.path(api_base_url, api_path), query = list(language = language))
 
   if (verbose) message(sprintf("Fetching details for Report ID: %d, Outbreak ID: %d", report_id, outbreak_id))
+  # Optional: print URL only if verbose
+  # if (verbose) message("URL: ", api_url)
 
   details_data <- tryCatch({
     response <- GET(
       url = api_url,
       add_headers("Accept" = "application/json"),
-      timeout(60) # Increased timeout for potentially larger response
+      timeout(60)
     )
 
-    # Check specifically for 404 Not Found
+    # *** ADDED: Get raw content immediately for debugging ***
+    content_raw <- content(response, as = "text", encoding = "UTF-8")
+    # *** END ADDED ***
+
     if (status_code(response) == 404) {
-       if (verbose) message(sprintf("Outbreak details not found (404) for Report ID: %d, Outbreak ID: %d", report_id, outbreak_id))
-       return(NULL) # Return NULL specifically for 404
+      if (verbose) message(sprintf("Outbreak details not found (404) for Report ID: %d, Outbreak ID: %d", report_id, outbreak_id))
+      return(NULL)
     }
 
-    # Check for other HTTP errors
     stop_for_status(response, task = sprintf("fetch outbreak details (Report: %d, Outbreak: %d)", report_id, outbreak_id))
 
-    content_raw <- content(response, as = "text", encoding = "UTF-8")
+    # *** ADDED: Print raw JSON if verbose and content exists ***
+    if (verbose && nzchar(content_raw)) {
+        message(sprintf("--- Raw JSON Response (Report: %d, Outbreak: %d) ---", report_id, outbreak_id))
+        message(content_raw) # Print the actual JSON string
+        message("-----------------------------------------------------")
+    }
+    # *** END ADDED ***
 
     if (nchar(content_raw) == 0 || !validate(content_raw)) {
       warning(sprintf("Received empty or invalid JSON response for outbreak details (Report: %d, Outbreak: %d).", report_id, outbreak_id))
       return(NULL)
     }
 
-    parsed_data <- fromJSON(content_raw, flatten = TRUE) # Flatten might be useful here too
+    parsed_data <- fromJSON(content_raw, flatten = TRUE)
 
-    if (verbose) message(sprintf("Successfully fetched details for Report ID: %d, Outbreak ID: %d", report_id, outbreak_id))
-
+    if (verbose) message(sprintf("Successfully fetched and parsed details for Report ID: %d, Outbreak ID: %d", report_id, outbreak_id))
     return(parsed_data)
 
   }, error = function(e) {
-    message(sprintf("\nError during API call for outbreak details (Report: %d, Outbreak: %d).", report_id, outbreak_id))
+    message(sprintf("\nError during API call or parsing for outbreak details (Report: %d, Outbreak: %d).", report_id, outbreak_id))
     status_code_val <- NA
     response_content_on_error <- ""
-     if (exists("response", inherits = FALSE)) {
-       status_code_val <- tryCatch(status_code(response), error = function(e2) NA)
-       response_content_on_error <- tryCatch(content(response, as="text", encoding="UTF-8"), error = function(e2) "")
-     }
+    # Try to get status and content if response exists
+    if (exists("response", inherits = FALSE)) {
+        status_code_val <- tryCatch(status_code(response), error = function(e2) NA)
+        # Use content_raw which was captured earlier
+        response_content_on_error <- if (exists("content_raw", inherits = FALSE)) content_raw else ""
+    }
     message("Status Code: ", status_code_val %||% "N/A")
+    # Print raw content on error if available
     if (nzchar(response_content_on_error)) {
-      message("Response Content on Error:\n", response_content_on_error)
+        message("--- Raw JSON Content on Error ---")
+        message(response_content_on_error)
+        message("-----------------------------")
     }
     message("Original R Error: ", e$message)
     return(NULL) # Return NULL on error
@@ -588,11 +609,12 @@ get_woah_outbreak_details <- function(report_id, outbreak_id, language = "en", v
 #' linking them, querying detailed information for each specific outbreak, and finally
 #' processing the results into a single data frame (tibble).
 #'
-#' @importFrom dplyr inner_join select distinct rename bind_rows mutate across relocate left_join everything contains starts_with
-#' @importFrom purrr map map2 possibly map_dfr keep discard set_names map_lgl
+#' @importFrom dplyr inner_join select distinct rename bind_rows mutate across relocate left_join everything contains starts_with filter transmute na_if
+#' @importFrom purrr map map2 possibly map_dfr keep discard set_names map_lgl pluck map_dbl %||%
 #' @importFrom tidyr unnest_wider unnest_longer unnest pivot_wider
 #' @importFrom tibble as_tibble tibble enframe
-#' @importFrom rlang :=
+#' @importFrom rlang := abort
+#' @importFrom jsonlite fromJSON
 #'
 #' @param start_date Character string or Date object for the start of the event date range (YYYY-MM-DD).
 #' @param end_date Character string or Date object for the end of the event date range (YYYY-MM-DD).
@@ -613,10 +635,9 @@ get_woah_outbreak_details <- function(report_id, outbreak_id, language = "en", v
 #'     end_date = "2025-03-26",
 #'     disease_name = "Foot and mouth disease virus (Inf. with) "
 #'   )
-#'   if (length(fmd_full_details) > 0) {
-#'     print(paste("Fetched details for", length(fmd_full_details), "outbreaks."))
-#'     # Inspect the first outbreak's details
-#'     # str(fmd_full_details[[1]], max.level = 2)
+#'   if (nrow(fmd_full_details) > 0) {
+#'     print(paste("Fetched details for", nrow(fmd_full_details), "outbreaks."))
+#'     dplyr::glimpse(fmd_full_details)
 #'   }
 #'
 #'   # Get full details for all outbreaks in the first week of March 2025
@@ -625,8 +646,8 @@ get_woah_outbreak_details <- function(report_id, outbreak_id, language = "en", v
 #'     end_date = "2025-03-07",
 #'     disease_name = NULL
 #'   )
-#'    if (length(all_full_details) > 0) {
-#'     print(paste("Fetched details for", length(all_full_details), "outbreaks."))
+#'    if (nrow(all_full_details) > 0) {
+#'     print(paste("Fetched details for", nrow(all_full_details), "outbreaks."))
 #'   }
 #' }
 #' @export
@@ -636,262 +657,233 @@ get_woah_outbreaks_full_info <- function(start_date,
                                          language = "en",
                                          verbose = FALSE) {
 
+  # Helper function to safely create tibbles, returning empty if input is bad
+  safe_tibble <- function(...) {
+    tryCatch(tibble(...), error = function(e) tibble())
+  }
+
   if (verbose) message("--- Starting Full Outbreak Information Fetch ---")
 
   # --- 1. Fetch Outbreak Events ---
   if (verbose) message("Step 1: Fetching outbreak events...")
-  outbreak_events <- get_woah_outbreaks(
-    start_date = start_date,
-    end_date = end_date,
-    disease_name = disease_name,
-    language = language,
-    verbose = verbose # Pass verbosity down
-  )
-
-  if (is.null(outbreak_events)) {
-    message("Error: Failed to fetch initial outbreak event data. Aborting.")
-    return(NULL)
-  }
-  if (nrow(outbreak_events) == 0) {
-    if (verbose) message("No outbreak events found for the specified criteria.")
-    return(list()) # Return empty list if no events
-  }
+  outbreak_events <- get_woah_outbreaks( start_date = start_date, end_date = end_date, disease_name = disease_name, language = language, verbose = verbose )
+  if (is.null(outbreak_events)) { message("Error: Failed to fetch initial outbreak event data. Aborting."); return(NULL) }
+  if (nrow(outbreak_events) == 0) { if (verbose) message("No outbreak events found."); return(tibble()) }
   if (verbose) message(sprintf("Found %d outbreak events.", nrow(outbreak_events)))
 
   # --- 2. Fetch Outbreak Locations ---
   if (verbose) message("Step 2: Fetching outbreak locations...")
-  outbreak_locations <- get_woah_outbreak_locations(
-    start_date = start_date,
-    end_date = end_date,
-    disease_name = disease_name,
-    language = language,
-    verbose = verbose # Pass verbosity down
-  )
-
-  if (is.null(outbreak_locations)) {
-    message("Error: Failed to fetch outbreak location data. Aborting.")
-    # Consider if partial results from events should be returned, but safer to abort.
-    return(NULL)
-  }
-   if (nrow(outbreak_locations) == 0) {
-    if (verbose) message("No outbreak locations found for the specified criteria (although events were found).")
-    return(list()) # Return empty list if no locations
-  }
+  outbreak_locations <- get_woah_outbreak_locations( start_date = start_date, end_date = end_date, disease_name = disease_name, language = language, verbose = verbose )
+  if (is.null(outbreak_locations)) { message("Error: Failed to fetch outbreak location data. Aborting."); return(NULL) }
+  if (nrow(outbreak_locations) == 0) { if (verbose) message("No outbreak locations found."); return(tibble()) }
   if (verbose) message(sprintf("Found %d outbreak location records.", nrow(outbreak_locations)))
 
   # --- 3. Link Events and Locations ---
   if (verbose) message("Step 3: Linking events and locations...")
+  if (!all(c("eventId", "reportId") %in% names(outbreak_events))) abort("Required columns 'eventId' or 'reportId' missing from events data.")
+  if (!all(c("eventId", "outbreakId") %in% names(outbreak_locations))) abort("Required columns 'eventId' or 'outbreakId' missing from locations data.")
 
-  # Ensure necessary columns exist
-  if (!"eventId" %in% names(outbreak_events) || !"reportId" %in% names(outbreak_events)) {
-     message("Error: 'eventId' or 'reportId' missing from outbreak events data.")
-     return(list())
-  }
-   if (!"eventId" %in% names(outbreak_locations) || !"outbreakId" %in% names(outbreak_locations)) {
-     message("Error: 'eventId' or 'outbreakId' missing from outbreak locations data.")
-     return(list())
-  }
-
-  # Select relevant columns and join
-  events_subset <- outbreak_events %>%
-    select(eventId, reportId) %>%
-    distinct() # Ensure unique event-report pairs if duplicates exist
-
-  locations_subset <- outbreak_locations %>%
-    select(eventId, outbreakId) %>%
-    distinct() # Ensure unique event-outbreak pairs
-
-  # Join to get reportId and outbreakId pairs
-  # Need to handle cases where eventId might be in one but not the other? Inner join is safest.
-  report_outbreak_pairs <- inner_join(events_subset, locations_subset, by = "eventId")
-
-  if (nrow(report_outbreak_pairs) == 0) {
-    if (verbose) message("No matching event/location pairs found after joining.")
-    return(list())
-  }
-
-  # Ensure unique reportId-outbreakId pairs before fetching details
-  report_outbreak_pairs <- report_outbreak_pairs %>%
-    select(reportId, outbreakId) %>%
-    distinct()
-
+  events_subset <- outbreak_events %>% select(eventId, reportId) %>% distinct()
+  locations_subset <- outbreak_locations %>% select(eventId, outbreakId) %>% distinct()
+  report_outbreak_pairs <- inner_join(events_subset, locations_subset, by = "eventId") %>% select(reportId, outbreakId) %>% distinct()
+  if (nrow(report_outbreak_pairs) == 0) { if (verbose) message("No matching event/location pairs found."); return(tibble()) }
   n_pairs <- nrow(report_outbreak_pairs)
   if (verbose) message(sprintf("Found %d unique report/outbreak pairs to fetch details for.", n_pairs))
 
   # --- 4. Fetch Details for Each Pair ---
   if (verbose) message("Step 4: Fetching full details for each outbreak...")
-
-  # Create a 'possibly' version of the details function to handle errors gracefully
   possibly_get_details <- possibly(get_woah_outbreak_details, otherwise = NULL, quiet = !verbose)
-
-  # Use map2 to iterate over reportId and outbreakId simultaneously
-  all_details_list <- map2(
-    report_outbreak_pairs$reportId,
-    report_outbreak_pairs$outbreakId,
-    ~ possibly_get_details(
-        report_id = .x,
-        outbreak_id = .y,
-        language = language,
-        verbose = verbose
-      ),
-    .progress = verbose # Show progress bar if verbose
-  )
-
-  # Filter out NULL results (errors or 404s)
-  successful_details <- Filter(Negate(is.null), all_details_list)
-  n_successful <- length(successful_details)
-  n_failed <- n_pairs - n_successful
-
-  if (verbose) {
-      message(sprintf("Successfully fetched details for %d outbreaks.", n_successful))
-      if (n_failed > 0) {
-          message(sprintf("Failed to fetch details for %d outbreaks (check logs for errors/404s).", n_failed))
-      }
-  }
+  all_details_list <- map2( report_outbreak_pairs$reportId, report_outbreak_pairs$outbreakId, ~ possibly_get_details( report_id = .x, outbreak_id = .y, language = language, verbose = FALSE ), .progress = verbose ) # Set inner verbose=FALSE
+  successful_details <- discard(all_details_list, is.null) # Use discard instead of Filter
+  n_successful <- length(successful_details); n_failed <- n_pairs - n_successful
+  if (verbose) message(sprintf("Successfully fetched details for %d outbreaks.", n_successful))
+  if (n_failed > 0 && verbose) message(sprintf("Failed to fetch details for %d outbreaks.", n_failed))
+  if (n_successful == 0) { if (verbose) message("No details fetched successfully."); return(tibble()) }
 
   # --- 5. Process Details List into a Tibble ---
   if (verbose) message("Step 5: Processing fetched details into a table...")
 
-  processed_data <- tryCatch({
-    map_dfr(successful_details, ~ {
-      # Ensure the input is a list
-      if (!is.list(.x)) return(tibble()) # Skip if not a list
+  # Counter for debugging the first item specifically
+  item_counter <- 0 # Initialize counter outside map_dfr
 
-      # Extract main outbreak info using flattened names and safe access
-      outbreak_info <- as_tibble(.x$outbreak %||% list()) %>%
-                       { if(nrow(.) == 0) tibble(outbreakId = NA_integer_) else . } %>%
-                       select(
-                         outbreakId = any_of("outbreakId"),
-                         reportId = any_of("createdByReportId"),
-                         oieReference = any_of("oieReference"),
-                         location = any_of("location"),
-                         latitude = any_of("latitude"),
-                         longitude = any_of("longitude"),
-                         isLocationApprox = any_of("isLocationApprox"),
-                         epiUnitType = any_of("epiUnitType.translation"),
-                         isCluster = any_of("isCluster"),
-                         clusterCount = any_of("clusterCount"),
-                         startDate = any_of("startDate"),
-                         endDate = any_of("endDate")
-                       ) %>%
-                       mutate(outbreakId = .$outbreakId %||% NA_integer_) # Ensure ID exists
+  processed_data <- map_dfr(successful_details, function(detail_item) {
+      item_counter <<- item_counter + 1 # Increment counter (use <<- for assignment outside function scope)
+      is_first_item <- (item_counter == 1)
 
-      if (is.na(outbreak_info$outbreakId) || nrow(outbreak_info) == 0) return(tibble())
-
-      # Extract species quantities safely
-      species_quantities_list <- .x$speciesQuantities %||% list()
-      if (length(species_quantities_list) > 0 && is.data.frame(species_quantities_list) && nrow(species_quantities_list) > 0) {
-         species_tbl <- species_quantities_list %>%
-           as_tibble() %>%
-           transmute( # Use transmute and provide defaults with %||%
-             speciesName = totalQuantities.speciesName %||% NA_character_,
-             isWild = totalQuantities.isWild %||% NA,
-             susceptible = totalQuantities.susceptible %||% NA_integer_,
-             cases = totalQuantities.cases %||% NA_integer_,
-             deaths = totalQuantities.deaths %||% NA_integer_,
-             killed = totalQuantities.killed %||% NA_integer_,
-             slaughtered = totalQuantities.slaughtered %||% NA_integer_,
-             vaccinated = totalQuantities.vaccinated %||% NA_integer_,
-             new_susceptible = newQuantities.susceptible %||% NA_integer_,
-             new_cases = newQuantities.cases %||% NA_integer_,
-             new_deaths = newQuantities.deaths %||% NA_integer_,
-             new_killed = newQuantities.killed %||% NA_integer_,
-             new_slaughtered = newQuantities.slaughtered %||% NA_integer_,
-             new_vaccinated = newQuantities.vaccinated %||% NA_integer_
-           )
-      } else {
-         species_tbl <- tibble( # Placeholder with correct column types
-             speciesName = NA_character_, isWild = NA, susceptible = NA_integer_,
-             cases = NA_integer_, deaths = NA_integer_, killed = NA_integer_,
-             slaughtered = NA_integer_, vaccinated = NA_integer_,
-             new_susceptible = NA_integer_, new_cases = NA_integer_, new_deaths = NA_integer_,
-             new_killed = NA_integer_, new_slaughtered = NA_integer_, new_vaccinated = NA_integer_
-         )
+      # --- START DEBUG BLOCK (for first item or general verbose) ---
+      if (verbose || is_first_item) {
+          message(sprintf("\n--- Processing Item #%d ---", item_counter))
+          if (!is.list(detail_item)) {
+              message("Item is not a list. Skipping.")
+              return(tibble()) # Skip early if not a list
+          }
+          message("Structure of detail_item:")
+          try(str(detail_item, max.level = 2, list.len = 5), silent = TRUE) # Print structure
       }
-      species_tbl <- species_tbl %>% mutate(outbreakId = outbreak_info$outbreakId)
+      # --- END DEBUG BLOCK ---
 
-      # Extract admin divisions safely
-      admin_divisions_list <- .x$adminDivisions %||% list()
-      if (length(admin_divisions_list) > 0 && is.data.frame(admin_divisions_list) && nrow(admin_divisions_list) > 0) {
-          admin_tbl <- admin_divisions_list %>%
-              as_tibble() %>%
-              select(adminLevel = any_of("adminLevel"), adminName = any_of("name")) %>%
-              filter(!is.na(adminLevel)) %>%
-              mutate(adminLevelName = paste0("adminLevel_", adminLevel)) %>%
-              select(adminLevelName, adminName) %>%
-              distinct() %>%
-              tidyr::pivot_wider(names_from = adminLevelName, values_from = adminName)
-      } else {
-          admin_tbl <- tibble() # Empty tibble
+      # Basic checks
+      if (!is.list(detail_item) || is.null(detail_item$outbreak)) {
+          if (verbose) message("Skipping invalid detail item (not a list or missing 'outbreak').")
+          return(tibble())
       }
-      admin_tbl <- admin_tbl %>% mutate(outbreakId = outbreak_info$outbreakId)
 
-      # Combine base info, admin info, and species info
-      # Ensure outbreakId is present in all parts before joining
-      combined_base <- left_join(outbreak_info, admin_tbl, by = "outbreakId")
-      combined_final <- left_join(combined_base, species_tbl, by = "outbreakId", relationship = "many-to-many") # Expect one-to-many
+      # Safely Extract Base Outbreak Info
+      outbreak_info <- safe_tibble(
+          outbreakId = pluck(detail_item, "outbreak", "outbreakId", .default = NA_integer_),
+          reportId = pluck(detail_item, "outbreak", "createdByReportId", .default = NA_integer_),
+          oieReference = pluck(detail_item, "outbreak", "oieReference", .default = NA_character_),
+          location = pluck(detail_item, "outbreak", "location", .default = NA_character_),
+          latitude = pluck(detail_item, "outbreak", "latitude", .default = NA_real_),
+          longitude = pluck(detail_item, "outbreak", "longitude", .default = NA_real_),
+          isLocationApprox = pluck(detail_item, "outbreak", "isLocationApprox", .default = NA),
+          epiUnitType = pluck(detail_item, "outbreak", "epiUnitType", "translation", .default = NA_character_),
+          isCluster = pluck(detail_item, "outbreak", "isCluster", .default = NA),
+          clusterCount = pluck(detail_item, "outbreak", "clusterCount", .default = NA_integer_),
+          startDate = pluck(detail_item, "outbreak", "startDate", .default = NA_character_),
+          endDate = pluck(detail_item, "outbreak", "endDate", .default = NA_character_)
+      ) %>% filter(!is.na(outbreakId))
 
-      return(combined_final)
+      # --- START DEBUG BLOCK ---
+      if (verbose || is_first_item) {
+          if(nrow(outbreak_info) == 0) message(">> Failed to extract valid base outbreak_info.")
+          else {
+              message(">> Structure of outbreak_info:")
+              try(str(outbreak_info), silent = TRUE)
+              message(">> Dimensions of outbreak_info: ", paste(dim(outbreak_info), collapse="x"))
+          }
+      }
+       if (nrow(outbreak_info) == 0) return(tibble()) # Essential check
+      # --- END DEBUG BLOCK ---
 
-    }, .id = NULL)
 
-  }, error = function(e) {
-      err_msg <- sprintf("Error processing the fetched details list into a table: %s", e$message)
-      message(err_msg)
-      # Optionally add more context here if possible, e.g., which outbreakId failed
-      return(tibble()) # Return empty tibble on processing error
-  })
+      # Safely Extract and Process Species Quantities
+      species_list <- detail_item$speciesQuantities %||% list()
+      species_tbl <- tibble() # Initialize
+      if (length(species_list) > 0) {
+         species_tbl <- map_dfr(species_list, function(sp) {
+             safe_tibble( # Using pluck within safe_tibble
+                 speciesName = pluck(sp, "totalQuantities", "speciesName", .default = NA_character_),
+                 isWild = pluck(sp, "totalQuantities", "isWild", .default = NA),
+                 susceptible = pluck(sp, "totalQuantities", "susceptible", .default = NA_integer_),
+                 cases = pluck(sp, "totalQuantities", "cases", .default = NA_integer_),
+                 deaths = pluck(sp, "totalQuantities", "deaths", .default = NA_integer_),
+                 killed = pluck(sp, "totalQuantities", "killed", .default = NA_integer_),
+                 slaughtered = pluck(sp, "totalQuantities", "slaughtered", .default = NA_integer_),
+                 vaccinated = pluck(sp, "totalQuantities", "vaccinated", .default = NA_integer_),
+                 new_susceptible = pluck(sp, "newQuantities", "susceptible", .default = NA_integer_),
+                 new_cases = pluck(sp, "newQuantities", "cases", .default = NA_integer_),
+                 new_deaths = pluck(sp, "newQuantities", "deaths", .default = NA_integer_),
+                 new_killed = pluck(sp, "newQuantities", "killed", .default = NA_integer_),
+                 new_slaughtered = pluck(sp, "newQuantities", "slaughtered", .default = NA_integer_),
+                 new_vaccinated = pluck(sp, "newQuantities", "vaccinated", .default = NA_integer_)
+             )
+         })
+      }
+      if (nrow(species_tbl) == 0) {
+          species_tbl <- safe_tibble(speciesName = NA_character_, isWild = NA, susceptible = NA_integer_, cases = NA_integer_, deaths = NA_integer_, killed = NA_integer_, slaughtered = NA_integer_, vaccinated = NA_integer_, new_susceptible = NA_integer_, new_cases = NA_integer_, new_deaths = NA_integer_, new_killed = NA_integer_, new_slaughtered = NA_integer_, new_vaccinated = NA_integer_)
+      }
+      # --- START DEBUG BLOCK ---
+      if(verbose || is_first_item) {
+           message(">> Structure of species_tbl:")
+           try(str(species_tbl), silent = TRUE)
+           message(">> Dimensions of species_tbl: ", paste(dim(species_tbl), collapse="x"))
+      }
+      # --- END DEBUG BLOCK ---
 
-  # Check if processed_data is empty before proceeding
-  if (nrow(processed_data) == 0) {
-      if (verbose) message("No data after processing details list.")
-      return(tibble())
+      # Safely Extract and Process Admin Divisions
+      admin_list <- detail_item$adminDivisions %||% list()
+      admin_tbl <- tibble() # Initialize
+      if(length(admin_list) > 0) {
+           admin_df <- map_dfr(admin_list, ~ safe_tibble(adminLevel = pluck(.x, "adminLevel", .default=NA_integer_), adminName = pluck(.x, "name", .default=NA_character_))) %>%
+              filter(!is.na(adminLevel) & !is.na(adminName))
+          if(nrow(admin_df) > 0) {
+              # Pivot logic - Ensure no duplicate levels before pivot
+              admin_tbl <- admin_df %>%
+                  mutate(adminLevelName = paste0("adminLevel_", adminLevel)) %>%
+                  select(adminLevelName, adminName) %>%
+                  distinct() %>% # Keep distinct combinations
+                  group_by(adminLevelName) %>% # Handle cases where API might give same level twice
+                  summarise(adminName = first(adminName), .groups = 'drop') %>% # Take first if duplicate levels
+                  pivot_wider(names_from = adminLevelName, values_from = adminName, values_fill = NA_character_)
+          }
+      }
+      if (nrow(admin_tbl) == 0) {
+          admin_tbl <- tibble(.rows = 1) # Ensure 1 row placeholder if no admin data
+      }
+      # --- START DEBUG BLOCK ---
+      if(verbose || is_first_item) {
+           message(">> Structure of admin_tbl:")
+           try(str(admin_tbl), silent = TRUE)
+           message(">> Dimensions of admin_tbl: ", paste(dim(admin_tbl), collapse="x"))
+      }
+      # --- END DEBUG BLOCK ---
+
+
+      # Combine pieces using bind_cols
+      # --- START DEBUG BLOCK ---
+      if(verbose || is_first_item) message("Attempting bind_cols...")
+      # --- END DEBUG BLOCK ---
+      combined <- tryCatch({
+            bind_cols(outbreak_info, admin_tbl, species_tbl)
+      }, error = function(e){
+           if(verbose || is_first_item) {
+               message("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+               message("!!!!! Error during bind_cols for item #", item_counter, " !!!!!")
+               message("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+               message(e$message)
+               message("Input Dimensions were:")
+               message(sprintf("  outbreak_info: %s", paste(dim(outbreak_info), collapse="x")))
+               message(sprintf("  admin_tbl:     %s", paste(dim(admin_tbl), collapse="x")))
+               message(sprintf("  species_tbl:   %s", paste(dim(species_tbl), collapse="x")))
+               message("-----------------------------")
+           }
+           return(tibble()) # Return empty on bind_cols error
+      })
+
+      # --- START DEBUG BLOCK ---
+      if(verbose || is_first_item) {
+           if(nrow(combined) > 0) {
+                message(">> bind_cols successful for item #", item_counter)
+                message(">> Structure after bind_cols:")
+                try(str(combined), silent = TRUE)
+                message(">> Dimensions after bind_cols: ", paste(dim(combined), collapse="x"))
+           } else {
+                message(">> bind_cols resulted in empty tibble for item #", item_counter)
+           }
+           message("--- End Processing Item #", item_counter, "---\n")
+      }
+      # --- END DEBUG BLOCK ---
+
+      return(combined)
+  }, .id = NULL) # map_dfr combines results
+
+  # Check if processed_data is empty before final cleanup
+  if (is.null(processed_data) || nrow(processed_data) == 0) {
+    if (verbose) message("No data resulted from processing details.")
+    return(tibble())
   }
 
-  # --- 6. Final Join and Cleanup ---
-  # Create successful_pairs from the report_outbreak_pairs that had successful detail fetches
-  successful_pairs <- report_outbreak_pairs %>%
-    filter(reportId %in% (map_dbl(successful_details, ~ .x$outbreak$createdByReportId %||% NA) %>% na.omit())) %>%
-    filter(outbreakId %in% (map_dbl(successful_details, ~ .x$outbreak$outbreakId %||% NA) %>% na.omit()))
-  
-  # Ensure successful_pairs has rows corresponding to processed_data
-  if (nrow(successful_pairs) == 0) {
-      if (verbose) message("No matching context data found, returning processed data without full context.")
-      final_table <- processed_data %>%
-                     select(any_of(c("reportId", "outbreakId")), everything()) # Bring IDs forward
-  } else {
-      # Ensure join keys exist in both tables
-      join_keys <- intersect(names(successful_pairs), names(processed_data))
-      join_keys <- intersect(join_keys, c("reportId", "outbreakId")) # Use only reportId and outbreakId for joining
+  # --- 6. Final Cleanup and Type Conversion ---
+  if (verbose) message("Step 6: Final cleanup and type conversion...")
 
-      if(length(join_keys) == 0) {
-          warning("Cannot join context data: No common ID columns (reportId, outbreakId) found between context and processed details.")
-          final_table <- processed_data
-      } else {
-          if (verbose) message(paste("Joining context using keys:", paste(join_keys, collapse=", ")))
-          final_table <- left_join(
-              successful_pairs %>% select(any_of(c("reportId", "outbreakId", "eventId", "country", "disease"))), # Context
-              processed_data,                                                                                    # Processed details
-              by = join_keys
-          )
-      }
-  }
-
-  # Final cleanup and type conversion
-  final_table <- final_table %>%
-      # Relocate columns for better readability
-      relocate(any_of(c("eventId", "reportId", "outbreakId", "country", "disease", "location", "longitude", "latitude", "startDate", "endDate"))) %>%
-      # Convert date strings (handle potential parsing errors)
+  final_table <- processed_data %>%
+      # Relocate key columns to the front
+      relocate(any_of(c("reportId", "outbreakId", "location", "longitude", "latitude", "startDate", "endDate", "speciesName"))) %>%
+      # Convert date strings (handle potential parsing errors safely)
       mutate(across(any_of(c("startDate", "endDate")),
-                    ~ suppressWarnings(as.Date(sub("T.*", "", .x))))) %>%
-      # Ensure consistent types for numeric columns
-      mutate(across(any_of(c("latitude", "longitude")), ~ suppressWarnings(as.numeric(.x)))) %>%
-      mutate(across(any_of(c("outbreakId", "reportId", "eventId", "clusterCount",
+                    ~ suppressWarnings(as.Date(sub("T.*", "", .x)))), # Use as.Date directly
+             # Ensure consistent types for numeric columns
+             across(any_of(c("latitude", "longitude")), ~ suppressWarnings(as.numeric(.x))),
+             across(any_of(c("outbreakId", "reportId", "clusterCount",
                            "susceptible", "cases", "deaths", "killed", "slaughtered", "vaccinated",
                            "new_susceptible", "new_cases", "new_deaths", "new_killed", "new_slaughtered", "new_vaccinated")),
-                    ~ suppressWarnings(as.integer(.x)))) %>%
-      # Ensure logical types
-      mutate(across(any_of(c("isLocationApprox", "isCluster", "isWild")), ~ suppressWarnings(as.logical(.x))))
+                    ~ suppressWarnings(as.integer(.x))),
+             # Ensure logical types
+             across(any_of(c("isLocationApprox", "isCluster", "isWild")), ~ suppressWarnings(as.logical(.x)))
+      ) %>%
+      # Optionally remove rows where essential IDs are missing if needed
+      filter(!is.na(outbreakId), !is.na(reportId))
 
   if (verbose) message(sprintf("Finished processing. Returning table with %d rows.", nrow(final_table)))
   if (verbose) message("--- Full Outbreak Information Fetch Complete ---")
