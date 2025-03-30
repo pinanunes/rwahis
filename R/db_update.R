@@ -465,15 +465,18 @@ end_dates <- (start_dates +
                                 start_date = startDate,
                                 end_date = endDate,
                                 total_cases = totalCases,
-                                total_outbreaks = totalOutbreaks
+                                total_outbreaks = totalOutbreaks,
+                                oie_reference = oieReference,
+                                national_reference = nationalReference,
+                                disease_name = disease
                             ) %>%
                             filter(!is.na(longitude), !is.na(latitude), !is.na(outbreak_id))
 
                         if (nrow(locations_valid) > 0) {
-                            # Check existing IDs
-                            existing_ids_query <- sprintf("SELECT %s FROM %s WHERE %s = ANY($1)", pk_col, target_table, pk_col)
+                            # Check existing IDs using outbreak_id (not pk_col which may be outdated)
+                            existing_ids_query <- sprintf("SELECT outbreak_id FROM %s WHERE outbreak_id = ANY($1)", target_table)
                             existing_ids <- tryCatch(
-                                DBI::dbGetQuery(conn, existing_ids_query, params = list(unique(locations_valid[[pk_col]])))[[pk_col]],
+                                DBI::dbGetQuery(conn, existing_ids_query, params = list(unique(locations_valid$outbreak_id)))$outbreak_id,
                                 error = function(e) integer(0) # Return empty if query fails
                             )
 
