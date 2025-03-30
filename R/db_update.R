@@ -199,18 +199,21 @@ update_woah_db <- function(start_date,
   # Locations Table
   locations_schema <- sprintf("
     CREATE TABLE %s (
-      outbreakId INTEGER PRIMARY KEY,
-      reportId INTEGER,
-      eventId INTEGER,
+      outbreak_id INTEGER PRIMARY KEY,
+      report_id INTEGER,
+      event_id INTEGER,
       longitude NUMERIC,
       latitude NUMERIC,
       geom GEOMETRY(Point, 4326), -- PostGIS geometry column
       location VARCHAR(255),
-      isLocationApprox BOOLEAN,
-      startDate DATE,
-      endDate DATE,
-      totalCases INTEGER,
-      totalOutbreaks INTEGER
+      is_location_approx BOOLEAN,
+      start_date DATE,
+      end_date DATE,
+      total_cases INTEGER,
+      total_outbreaks INTEGER,
+      oie_reference VARCHAR(100),
+      national_reference VARCHAR(100),
+      disease_name VARCHAR(255)
       -- Add other relevant columns from get_woah_outbreak_locations if needed
     );", table_names$locations)
   check_and_create_table(conn, table_names$locations, locations_schema)
@@ -256,27 +259,27 @@ update_woah_db <- function(start_date,
     );", table_names$quantity_unit)
    check_and_create_table(conn, table_names$quantity_unit, quantity_unit_schema)
 
-   # Admin Divisions Table
-   admin_divisions_schema <- sprintf("
+  # Admin Divisions Table
+  admin_divisions_schema <- sprintf("
     CREATE TABLE %s (
-      outbreakId INTEGER,
-      reportId INTEGER,
-      areaId INTEGER,
+      outbreak_id INTEGER,
+      report_id INTEGER,
+      area_id INTEGER,
       name VARCHAR(255),
-      adminLevel INTEGER,
-      parentAreaId INTEGER,
-      PRIMARY KEY (outbreakId, areaId) -- Composite key
+      admin_level INTEGER,
+      parent_area_id INTEGER,
+      PRIMARY KEY (outbreak_id, area_id) -- Composite key
     );", table_names$admin_divisions)
    check_and_create_table(conn, table_names$admin_divisions, admin_divisions_schema)
 
    # Species Quantities Table (Complex - needs careful column definition)
    species_quantities_schema <- sprintf("
     CREATE TABLE %s (
-      outbreakId INTEGER,
-      reportId INTEGER,
-      speciesId INTEGER, -- Assuming this is the correct ID after unnesting totalQuantities
-      speciesName VARCHAR(255),
-      isWild BOOLEAN,
+      outbreak_id INTEGER,
+      report_id INTEGER,
+      species_id INTEGER,
+      species_name VARCHAR(255),
+      is_wild BOOLEAN,
       susceptible INTEGER,
       cases INTEGER,
       deaths INTEGER,
@@ -289,13 +292,13 @@ update_woah_db <- function(start_date,
       new_killed INTEGER,
       new_slaughtered INTEGER,
       new_vaccinated INTEGER,
-      speciesType_wildType VARCHAR(100), -- Example, adjust based on actual data
-      speciesType_waterType VARCHAR(100),
-      speciesType_productionSystem VARCHAR(100),
-      speciesType_productionType_original VARCHAR(255),
-      speciesType_productionType_translation VARCHAR(255),
-      createdByCurrentReport BOOLEAN, -- From the top level of speciesQuantities list item
-      PRIMARY KEY (outbreakId, speciesId) -- Composite key (assuming speciesId is unique per outbreak)
+      species_type_wild_type VARCHAR(100),
+      species_type_water_type VARCHAR(100),
+      species_type_production_system VARCHAR(100),
+      species_type_production_type_original VARCHAR(255),
+      species_type_production_type_translation VARCHAR(255),
+      created_by_current_report BOOLEAN,
+      PRIMARY KEY (outbreak_id, species_id)
     );", table_names$species_quantities)
    check_and_create_table(conn, table_names$species_quantities, species_quantities_schema)
 
@@ -452,9 +455,19 @@ end_dates <- (start_dates +
                     if (!all(c("longitude", "latitude", pk_col) %in% names(locations_data))) {
                          warning(sprintf("Required columns ('longitude', 'latitude', '%s') missing in locations data for this batch. Skipping write.", pk_col))
                     } else {
-                        # Filter valid coordinates and ensure PK is not NA
+                        # Rename columns to match database schema
                         locations_valid <- locations_data %>%
-                            filter(!is.na(longitude), !is.na(latitude), !is.na(.data[[pk_col]]))
+                            rename(
+                                outbreak_id = outbreakId,
+                                report_id = reportId,
+                                event_id = eventId,
+                                is_location_approx = isLocationApprox,
+                                start_date = startDate,
+                                end_date = endDate,
+                                total_cases = totalCases,
+                                total_outbreaks = totalOutbreaks
+                            ) %>%
+                            filter(!is.na(longitude), !is.na(latitude), !is.na(outbreak_id))
 
                         if (nrow(locations_valid) > 0) {
                             # Check existing IDs
@@ -507,54 +520,88 @@ end_dates <- (start_dates +
             return()
         }
 
-        # --- Define Table Mapping and PKs ---
-        # This mapping needs to be robust and match the CREATE TABLE statements
-        if (element_name == "outbreak") {
-            target_table <- table_names$outbreak
-            pk_cols <- "outbreakId"
-        } else if (element_name == "quantityUnit") {
-            target_table <- table_names$quantity_unit
-            pk_cols <- "outbreakId" # Assumes one per outbreak
-        } else if (element_name == "adminDivisions") {
-            target_table <- table_names$admin_divisions
-            pk_cols <- c("outbreakId", "areaId")
-        } else if (element_name == "speciesQuantities") {
-            target_table <- table_names$species_quantities
-            # Assuming 'speciesId' comes from unnesting 'totalQuantities' or 'newQuantities'
-            # Need to ensure the column exists after post-processing in get_woah_outbreak_details
-            if ("totalQuantities_speciesId" %in% names(current_data)) {
-                 current_data <- current_data %>% dplyr::rename(speciesId = "totalQuantities_speciesId") # Standardize name
-                 pk_cols <- c("outbreakId", "speciesId")
-            } else if ("newQuantities_speciesId" %in% names(current_data)) {
-                 current_data <- current_data %>% dplyr::rename(speciesId = "newQuantities_speciesId") # Standardize name
-                 pk_cols <- c("outbreakId", "speciesId")
-            } else if ("speciesType_speciesId" %in% names(current_data)) {
-                 current_data <- current_data %>% dplyr::rename(speciesId = "speciesType_speciesId") # Standardize name
-                 pk_cols <- c("outbreakId", "speciesId")
-            } else {
-                 warning(sprintf("Could not determine speciesId column for PK in '%s'. Skipping write.", element_name))
-                 return()
+            # --- Define Table Mapping and PKs ---
+            # This mapping needs to be robust and match the CREATE TABLE statements
+            if (element_name == "outbreak") {
+                target_table <- table_names$outbreak
+                current_data <- current_data %>%
+                    rename(
+                        outbreak_id = outbreakId,
+                        report_id = reportId,
+                        area_id = areaId,
+                        is_location_approx = isLocationApprox,
+                        cluster_count = clusterCount,
+                        start_date = startDate,
+                        end_date = endDate,
+                        created_by_report_id = createdByReportId,
+                        last_update_report_id = lastUpdateReportId,
+                        epi_unit_type_id = epiUnitType_id,
+                        epi_unit_type_key_value = epiUnitType_keyValue,
+                        epi_unit_type_translation = epiUnitType_translation,
+                        description_original = description_original,
+                        description_translation = description_translation
+                    )
+                pk_cols <- "outbreak_id"
+            } else if (element_name == "quantityUnit") {
+                target_table <- table_names$quantity_unit
+                current_data <- current_data %>%
+                    rename(
+                        outbreak_id = outbreakId,
+                        report_id = reportId,
+                        key_value = keyValue
+                    )
+                pk_cols <- "outbreak_id"
+            } else if (element_name == "adminDivisions") {
+                target_table <- table_names$admin_divisions
+                current_data <- current_data %>%
+                    rename(
+                        outbreak_id = outbreakId,
+                        report_id = reportId,
+                        area_id = areaId,
+                        admin_level = adminLevel,
+                        parent_area_id = parentAreaId
+                    )
+                pk_cols <- c("outbreak_id", "area_id")
+            } else if (element_name == "speciesQuantities") {
+                target_table <- table_names$species_quantities
+                current_data <- current_data %>%
+                    rename(
+                        outbreak_id = outbreakId,
+                        report_id = reportId,
+                        species_id = speciesId,
+                        species_name = speciesName,
+                        is_wild = isWild,
+                        created_by_current_report = createdByCurrentReport
+                    )
+                pk_cols <- c("outbreak_id", "species_id")
+            } else if (element_name == "controlMeasures") {
+                target_table <- table_names$control_measures
+                current_data <- current_data %>%
+                    rename(
+                        outbreak_id = outbreakId,
+                        report_id = reportId,
+                        measure_id = measure_id,
+                        measure_category = measure_category,
+                        measure_name = measure_name,
+                        measure_description = measure_description,
+                        status_id = status_id,
+                        status_key_value = status_keyValue,
+                        status_translation = status_translation
+                    )
+                pk_cols <- c("outbreak_id", "measure_id")
+            } else if (element_name == "diagnosticMethods") {
+                target_table <- table_names$diagnostic_methods
+                current_data <- current_data %>%
+                    rename(
+                        outbreak_id = outbreakId,
+                        report_id = reportId,
+                        nature_id = nature_id,
+                        nature_key_value = nature_keyValue,
+                        nature_translation = nature_translation,
+                        nature_description = nature_description
+                    )
+                pk_cols <- c("outbreak_id", "nature_id")
             }
-        } else if (element_name == "controlMeasures") {
-             target_table <- table_names$control_measures
-             # Requires unnesting 'measure' and 'status' in get_woah_outbreak_details
-             # Assuming 'measure_id' exists after unnesting
-             if ("measure_id" %in% names(current_data)) {
-                 pk_cols <- c("outbreakId", "measure_id")
-             } else {
-                  warning(sprintf("Required PK column 'measure_id' not found after processing '%s'. Skipping write.", element_name))
-                  return()
-             }
-        } else if (element_name == "diagnosticMethods") {
-             target_table <- table_names$diagnostic_methods
-             # Requires unnesting 'nature'
-             if ("nature_id" %in% names(current_data)) {
-                 pk_cols <- c("outbreakId", "nature_id")
-             } else {
-                  warning(sprintf("Required PK column 'nature_id' not found after processing '%s'. Skipping write.", element_name))
-                  return()
-             }
-        }
         # Add mappings for additional_measures, measures_not_implemented if needed
 
         if (is.null(target_table) || is.null(pk_cols)) {
