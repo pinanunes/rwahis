@@ -495,30 +495,6 @@ get_woah_outbreaks <- function(start_date,
 }
 
 
-# --- Function: get_woah_outbreak_details (Internal Helper) ---
-
-#' Fetch Full Details for a Single Outbreak
-#'
-#' Retrieves the complete information set for a specific outbreak using its
-#' report ID and outbreak ID from the WOAH API. This is typically used as a
-#' helper function.
-#'
-#' @importFrom httr GET modify_url add_headers stop_for_status content timeout status_code
-#' @importFrom jsonlite fromJSON validate
-#' @importFrom purrr %||%
-#'
-#' @param report_id The numeric ID of the report containing the outbreak.
-#' @param outbreak_id The numeric ID of the specific outbreak.
-#' @param language Language code (default: "en").
-#' @param verbose Logical: Print progress messages? (Default: FALSE)
-#'
-#' @return A named list of tibbles, each containing a part of the outbreak details
-#'   (e.g., outbreak, admin_divisions, species_quantities). Returns NULL if an error occurs
-#'   or the outbreak is not found. The tibbles will include `outbreakId` and `reportId` columns.
-#' @importFrom tibble tibble as_tibble
-#' @importFrom dplyr bind_rows relocate
-#' @importFrom purrr pluck map_dfr possibly list_assign map
-#' @noRd
 # --- Helper Function: safe_extract_to_tibble (Internal) ---
 # Safely extracts a named element from the main list, converts to tibble, adds IDs.
 safe_extract_to_tibble <- function(data_list, element_name, outbreak_id, report_id) {
