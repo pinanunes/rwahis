@@ -371,7 +371,7 @@ fetch_woah_data <- function(start_date,
                     )
                 )
                 
-                if (element_name %in% names(rename_mappings)) {
+                if (!is.null(data) && nrow(data) > 0 && element_name %in% names(rename_mappings)) {
                     mapping <- rename_mappings[[element_name]]
                     # Only keep mappings where source column exists
                     valid_mapping <- mapping[names(mapping) %in% names(data)]
