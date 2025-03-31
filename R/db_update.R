@@ -485,6 +485,8 @@ update_woah_db <- function(start_date,
 
       # --- Perform Writes within a Transaction ---
       if (verbose) message("Starting database write transaction...")
+      if (verbose) message(head(locations))
+      if (verbose) message(head(combined_locations_data))
       db_write_success <- tryCatch({
           DBI::dbWithTransaction(conn, {
               transaction_step_success <- TRUE # Track success within transaction
