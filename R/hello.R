@@ -950,37 +950,72 @@ get_woah_outbreaks_full_info <- function(start_date,
   # --- 5. Combine Corresponding Tibbles Across Outbreaks ---
   if (verbose) message("Step 5: Combining corresponding tables across all fetched outbreaks...")
 
-  # Use the requested table names for processing
-  table_names <- requested_tables
+  # Process each outbreak's data to split nested data frames
+  processed_details_lists <- map(successful_details_lists, function(outbreak_data) {
+    # Split speciesQuantities
+    if (!is.null(outbreak_data$speciesQuantities) && nrow(outbreak_data$speciesQuantities) > 0) {
+      outbreak_data$totalQuantities <- outbreak_data$speciesQuantities %>%
+        select(outbreakId, reportId, totalQuantities) %>%
+        tidyr::unnest(totalQuantities)
+      
+      outbreak_data$newQuantities <- outbreak_data$speciesQuantities %>%
+        select(outbreakId, reportId, newQuantities) %>%
+        tidyr::unnest(newQuantities)
+      
+      outbreak_data$speciesType <- outbreak_data$speciesQuantities %>%
+        select(outbreakId, reportId, speciesType) %>%
+        tidyr::unnest(speciesType)
+    }
+    
+    # Split controlMeasures
+    if (!is.null(outbreak_data$controlMeasures) && nrow(outbreak_data$controlMeasures) > 0) {
+      outbreak_data$controlMeasure <- outbreak_data$controlMeasures %>%
+        select(outbreakId, reportId, measure) %>%
+        tidyr::unnest(measure)
+      
+      outbreak_data$controlStatus <- outbreak_data$controlMeasures %>%
+        select(outbreakId, reportId, status) %>%
+        tidyr::unnest(status)
+    }
+    
+    # Split diagnosticMethods
+    if (!is.null(outbreak_data$diagnosticMethods) && nrow(outbreak_data$diagnosticMethods) > 0) {
+      outbreak_data$diagnosticNature <- outbreak_data$diagnosticMethods %>%
+        select(outbreakId, reportId, nature) %>%
+        tidyr::unnest(nature)
+    }
+    
+    outbreak_data
+  })
 
-  # Use map to iterate through requested table names, pluck the corresponding tibble from each list, and bind_rows
-  combined_tables_list <- map(table_names, function(tbl_name) {
+  # Define all tables to include (original + new split tables)
+  all_tables <- c(
+    "adminDivisions", "quantityUnit",
+    "totalQuantities", "newQuantities", "speciesType",
+    "controlMeasure", "controlStatus",
+    "diagnosticNature"
+  )
+
+  # Combine tables across all outbreaks
+  combined_tables_list <- map(all_tables, function(tbl_name) {
     if (verbose) message(sprintf("  Combining table: '%s'", tbl_name))
     
-    # Initialize empty tibble with outbreakId and reportId columns
     combined_tbl <- tibble::tibble(outbreakId = integer(0), reportId = integer(0))
     
-    # Process each outbreak's data
-    for (i in seq_along(successful_details_lists)) {
-      outbreak_data <- successful_details_lists[[i]]
+    for (i in seq_along(processed_details_lists)) {
+      outbreak_data <- processed_details_lists[[i]]
       current_tbl <- purrr::pluck(outbreak_data, tbl_name)
       
-      # Skip if not a data frame or empty
       if (!is.data.frame(current_tbl) || nrow(current_tbl) == 0) next
       
-      # Get the reportId and outbreakId from the original pairs
-      report_id <- report_outbreak_pairs$reportId[i]
-      outbreak_id <- report_outbreak_pairs$outbreakId[i]
-      
-      # Ensure IDs are set in the current table
+      # Ensure IDs are set
       if (!"outbreakId" %in% names(current_tbl)) {
-        current_tbl$outbreakId <- outbreak_id
+        current_tbl$outbreakId <- report_outbreak_pairs$outbreakId[i]
       }
       if (!"reportId" %in% names(current_tbl)) {
-        current_tbl$reportId <- report_id
+        current_tbl$reportId <- report_outbreak_pairs$reportId[i]
       }
       
-      # Bind to the combined table
       combined_tbl <- dplyr::bind_rows(combined_tbl, current_tbl)
     }
     
@@ -990,10 +1025,9 @@ get_woah_outbreaks_full_info <- function(start_date,
       if (verbose) message(sprintf("    Combined '%s' table has %d rows.", tbl_name, nrow(combined_tbl)))
     }
     
-    # Ensure IDs are first columns
     combined_tbl %>% dplyr::relocate(outbreakId, reportId)
     
-  }) %>% set_names(table_names) # Set the names of the final list
+  }) %>% set_names(all_tables)
 
 
   # --- 6. Final Result ---
