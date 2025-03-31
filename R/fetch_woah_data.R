@@ -245,16 +245,26 @@ fetch_woah_data <- function(start_date,
       }
        # Rename columns after combining, before returning
        if (!is.null(combined_locations_data)) {
-           cols_to_rename_loc <- intersect(names(combined_locations_data), c("outbreakId", "reportId", "eventId", "isLocationApprox", "startDate", "endDate", "totalCases", "totalOutbreaks", "oieReference", "nationalReference", "disease"))
-           if(length(cols_to_rename_loc) > 0) {
+           rename_mapping <- list(
+               "outbreakId" = "outbreak_id",
+               "reportId" = "report_id", 
+               "eventId" = "event_id",
+               "isLocationApprox" = "is_location_approx",
+               "startDate" = "start_date",
+               "endDate" = "end_date",
+               "totalCases" = "total_cases",
+               "totalOutbreaks" = "total_outbreaks",
+               "oieReference" = "oie_reference",
+               "nationalReference" = "national_reference",
+               "disease" = "disease_name"
+           )
+           
+           # Only keep mappings where the source column exists
+           valid_mappings <- rename_mapping[names(rename_mapping) %in% names(combined_locations_data)]
+           
+           if(length(valid_mappings) > 0) {
                combined_locations_data <- combined_locations_data %>%
-                   rename(
-                       outbreak_id = outbreakId, report_id = reportId, event_id = eventId,
-                       is_location_approx = isLocationApprox, start_date = startDate, end_date = endDate,
-                       total_cases = totalCases, total_outbreaks = totalOutbreaks,
-                       oie_reference = oieReference, national_reference = nationalReference,
-                       disease_name = disease
-                   )
+                   rename(!!!valid_mappings)
            }
        }
   } else {
@@ -293,25 +303,64 @@ fetch_woah_data <- function(start_date,
         # Rename columns within the combined details list
        if (!is.null(combined_details_list)) {
             combined_details_list <- purrr::imap(combined_details_list, function(data, element_name) {
-                current_data_renamed <- data
-                if (element_name == "outbreak") {
-                    cols_to_rename <- intersect(names(current_data_renamed), c("outbreakId", "reportId", "areaId", "isLocationApprox", "clusterCount", "startDate", "endDate", "createdByReportId", "lastUpdateReportId", "epiUnitType_id", "epiUnitType_keyValue", "epiUnitType_translation", "description_original", "description_translation"))
-                    if(length(cols_to_rename) > 0) current_data_renamed <- current_data_renamed %>% rename(outbreak_id = outbreakId, report_id = reportId, area_id = areaId, is_location_approx = isLocationApprox, cluster_count = clusterCount, start_date = startDate, end_date = endDate, created_by_report_id = createdByReportId, last_update_report_id = lastUpdateReportId, epi_unit_type_id = epiUnitType_id, epi_unit_type_key_value = epiUnitType_keyValue, epi_unit_type_translation = epiUnitType_translation, description_original = description_original, description_translation = description_translation)
-                } else if (element_name == "quantityUnit") {
-                    cols_to_rename <- intersect(names(current_data_renamed), c("outbreakId", "reportId", "keyValue"))
-                    if(length(cols_to_rename) > 0) current_data_renamed <- current_data_renamed %>% rename(outbreak_id = outbreakId, report_id = reportId, key_value = keyValue)
-                } else if (element_name == "adminDivisions") {
-                    cols_to_rename <- intersect(names(current_data_renamed), c("outbreakId", "reportId", "areaId", "adminLevel", "parentAreaId"))
-                    if(length(cols_to_rename) > 0) current_data_renamed <- current_data_renamed %>% rename(outbreak_id = outbreakId, report_id = reportId, area_id = areaId, admin_level = adminLevel, parent_area_id = parentAreaId)
-                } else if (element_name == "speciesQuantities") {
-                    cols_to_rename <- intersect(names(current_data_renamed), c("outbreakId", "reportId", "speciesId", "speciesName", "isWild", "createdByCurrentReport"))
-                    if(length(cols_to_rename) > 0) current_data_renamed <- current_data_renamed %>% rename(outbreak_id = outbreakId, report_id = reportId, species_id = speciesId, species_name = speciesName, is_wild = isWild, created_by_current_report = createdByCurrentReport)
-                } else if (element_name == "diagnosticMethods") {
-                    cols_to_rename <- intersect(names(current_data_renamed), c("outbreakId", "reportId", "nature_id", "nature_keyValue", "nature_translation", "nature_description"))
-                    if(length(cols_to_rename) > 0) current_data_renamed <- current_data_renamed %>% rename(outbreak_id = outbreakId, report_id = reportId, nature_id = nature_id, nature_key_value = nature_keyValue, nature_translation = nature_translation, nature_description = nature_description)
+                if (is.null(data)) return(NULL)
+                
+                rename_mappings <- list(
+                    "outbreak" = list(
+                        "outbreakId" = "outbreak_id",
+                        "reportId" = "report_id",
+                        "areaId" = "area_id",
+                        "isLocationApprox" = "is_location_approx",
+                        "clusterCount" = "cluster_count",
+                        "startDate" = "start_date",
+                        "endDate" = "end_date",
+                        "createdByReportId" = "created_by_report_id",
+                        "lastUpdateReportId" = "last_update_report_id",
+                        "epiUnitType_id" = "epi_unit_type_id",
+                        "epiUnitType_keyValue" = "epi_unit_type_key_value",
+                        "epiUnitType_translation" = "epi_unit_type_translation",
+                        "description_original" = "description_original",
+                        "description_translation" = "description_translation"
+                    ),
+                    "quantityUnit" = list(
+                        "outbreakId" = "outbreak_id",
+                        "reportId" = "report_id",
+                        "keyValue" = "key_value"
+                    ),
+                    "adminDivisions" = list(
+                        "outbreakId" = "outbreak_id",
+                        "reportId" = "report_id",
+                        "areaId" = "area_id",
+                        "adminLevel" = "admin_level",
+                        "parentAreaId" = "parent_area_id"
+                    ),
+                    "speciesQuantities" = list(
+                        "outbreakId" = "outbreak_id",
+                        "reportId" = "report_id",
+                        "speciesId" = "species_id",
+                        "speciesName" = "species_name",
+                        "isWild" = "is_wild",
+                        "createdByCurrentReport" = "created_by_current_report"
+                    ),
+                    "diagnosticMethods" = list(
+                        "outbreakId" = "outbreak_id",
+                        "reportId" = "report_id",
+                        "nature_id" = "nature_id",
+                        "nature_keyValue" = "nature_key_value",
+                        "nature_translation" = "nature_translation",
+                        "nature_description" = "nature_description"
+                    )
+                )
+                
+                if (element_name %in% names(rename_mappings)) {
+                    mapping <- rename_mappings[[element_name]]
+                    # Only keep mappings where source column exists
+                    valid_mapping <- mapping[names(mapping) %in% names(data)]
+                    if (length(valid_mapping) > 0) {
+                        data <- data %>% rename(!!!valid_mapping)
+                    }
                 }
-                # Add other renames as needed
-                return(current_data_renamed)
+                return(data)
             })
        }
 
