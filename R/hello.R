@@ -608,7 +608,41 @@ safe_extract_to_tibble <- function(data_list, element_name, outbreak_id, report_
 
 # --- Function: get_woah_outbreak_details (Internal Helper) ---
 
-#' @noRd
+#' Fetch Detailed Information for a Specific Outbreak
+#'
+#' Retrieves comprehensive details for a specific outbreak from the WOAH API,
+#' including outbreak metadata, administrative divisions, species quantities,
+#' control measures, and diagnostic methods.
+#'
+#' @importFrom httr GET content stop_for_status modify_url add_headers timeout status_code
+#' @importFrom jsonlite fromJSON validate
+#' @importFrom purrr %||%
+#' @importFrom tibble tibble as_tibble
+#' @importFrom dplyr bind_rows relocate
+#' 
+#' @param report_id Numeric ID of the report containing the outbreak
+#' @param outbreak_id Numeric ID of the specific outbreak
+#' @param language Language code (default: "en")
+#' @param verbose Logical: Print progress messages? (Default: FALSE)
+#'
+#' @return A named list of tibbles containing:
+#' \itemize{
+#'   \item outbreak: Basic outbreak information
+#'   \item adminDivisions: Administrative divisions affected
+#'   \item speciesQuantities: Species and quantities affected
+#'   \item controlMeasures: Control measures implemented
+#'   \item diagnosticMethods: Diagnostic methods used
+#'   \item additionalMeasures: Additional measures taken
+#'   \item measuresNotImplemented: Measures not implemented
+#' }
+#' @examples
+#' \dontrun{
+#'   # Get details for outbreak with report ID 123 and outbreak ID 456
+#'   details <- get_woah_outbreak_details(123, 456)
+#'   print(details$outbreak)
+#'   print(details$speciesQuantities)
+#' }
+#' @export
 get_woah_outbreak_details <- function(report_id, outbreak_id, language = "en", verbose = FALSE) {
 
   # Input validation (keep existing)
