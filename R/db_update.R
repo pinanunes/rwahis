@@ -76,7 +76,7 @@
 #' @importFrom DBI dbConnect dbDisconnect dbExistsTable dbExecute dbGetQuery dbWriteTable Id dbWithTransaction
 #' @importFrom RPostgres Postgres
 #' @importFrom sf st_as_sf st_write st_geometry st_crs<- st_crs
-#' @importFrom lubridate ymd interval duration floor_date %m+% months days weeks
+#' @importFrom lubridate ymd interval duration floor_date %m+% days weeks
 #' @importFrom dplyr %>% filter select distinct anti_join mutate across all_of rename relocate if_else bind_rows summarise group_by n
 #' @importFrom purrr map map_chr safely walk imap list_rbind set_names pluck keep compact map_lgl
 #' @importFrom rlang := abort
@@ -485,7 +485,7 @@ update_woah_db <- function(start_date,
 
       # --- Perform Writes within a Transaction ---
       if (verbose) message("Starting database write transaction...")
-      if (verbose) message(head(locations))
+    
       if (verbose) message(head(combined_locations_data))
       db_write_success <- tryCatch({
           DBI::dbWithTransaction(conn, {

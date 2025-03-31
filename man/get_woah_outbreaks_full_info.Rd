@@ -2,7 +2,7 @@
 % Please edit documentation in R/hello.R
 \name{get_woah_outbreaks_full_info}
 \alias{get_woah_outbreaks_full_info}
-\title{Fetch Full Outbreak Information (Events, Locations, Details) as a Table}
+\title{Fetch Full Outbreak Information (Events, Locations, Details) as Separate Tables}
 \usage{
 get_woah_outbreaks_full_info(
   start_date,
@@ -25,38 +25,40 @@ If NULL or empty, fetches data for all diseases.}
 \item{verbose}{Logical: Print progress messages? (Default: FALSE)}
 }
 \value{
-A tibble containing the combined details for all successfully fetched outbreaks.
-  Columns include outbreak details, administrative divisions, and species quantities.
-  Returns an empty tibble if no outbreaks match the criteria or if errors occur during fetching.
-  Returns NULL if the initial event or location fetch fails critically.
+A named list of tibbles. Each element in the list corresponds to a
+  component of the outbreak details (e.g., `outbreak`, `adminDivisions`,
+  `speciesQuantities`, `diagnosticMethods`, etc.), containing the combined data
+  from all successfully fetched outbreaks. Returns an empty named list if no
+  outbreaks match or if errors occur during fetching. Returns NULL if the
+  initial event or location fetch fails critically.
 }
 \description{
-Retrieves comprehensive outbreak information by first fetching event and location data,
-linking them, querying detailed information for each specific outbreak, and finally
-processing the results into a single data frame (tibble).
+Retrieves comprehensive outbreak information by fetching event and location data,
+linking them, querying detailed information for each specific outbreak using
+`get_woah_outbreak_details`, and finally combining the results into a named list
+of tibbles, where each tibble corresponds to a specific part of the outbreak data
+(e.g., 'outbreak', 'adminDivisions', 'speciesQuantities').
 }
 \examples{
 \dontrun{
-  # Get full details for Foot and Mouth disease outbreaks in March 2025
-  fmd_full_details <- get_woah_outbreaks_full_info(
+  # Get full details for HPAI outbreaks in March 2025
+  hpai_full_details_list <- get_woah_outbreaks_full_info(
     start_date = "2025-03-01",
     end_date = "2025-03-26",
-    disease_name = "Foot and mouth disease virus (Inf. with) "
+    disease_name = "Influenza A virus (Inf. with high pathogenicity) (OIE-listed)"
   )
-  if (length(fmd_full_details) > 0) {
-    print(paste("Fetched details for", length(fmd_full_details), "outbreaks."))
-    # Inspect the first outbreak's details
-    # str(fmd_full_details[[1]], max.level = 2)
-  }
-
-  # Get full details for all outbreaks in the first week of March 2025
-  all_full_details <- get_woah_outbreaks_full_info(
-    start_date = "2025-03-01",
-    end_date = "2025-03-07",
-    disease_name = NULL
-  )
-   if (length(all_full_details) > 0) {
-    print(paste("Fetched details for", length(all_full_details), "outbreaks."))
+  if (length(hpai_full_details_list) > 0 &&
+      !is.null(hpai_full_details_list$outbreak) &&
+      nrow(hpai_full_details_list$outbreak) > 0) {
+    print(paste("Fetched details for", nrow(hpai_full_details_list$outbreak), "outbreaks."))
+    print("Available tables:")
+    print(names(hpai_full_details_list))
+    print("Structure of outbreak table:")
+    dplyr::glimpse(hpai_full_details_list$outbreak)
+    print("Structure of speciesQuantities table:")
+    dplyr::glimpse(hpai_full_details_list$speciesQuantities)
+  } else {
+    print("No outbreak details found or error occurred.")
   }
 }
 }

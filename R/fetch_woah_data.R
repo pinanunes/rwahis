@@ -39,7 +39,7 @@
 #'   }
 #'   Returns `NULL` overall if a critical error occurs during input validation or date processing. Issues during API fetching for specific batches are reported as warnings, and data from failed batches is excluded.
 #'
-#' @importFrom lubridate ymd interval duration floor_date %m+% months days weeks
+#' @importFrom lubridate ymd interval duration floor_date %m+% days weeks
 #' @importFrom dplyr %>% filter select distinct anti_join mutate across all_of rename relocate if_else bind_rows summarise group_by n
 #' @importFrom purrr map map_chr safely walk imap list_rbind set_names pluck keep compact map_lgl
 #' @importFrom rlang := abort
