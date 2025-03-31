@@ -853,15 +853,14 @@ get_woah_outbreaks_full_info <- function(start_date,
                                          language = "en",
                                          verbose = FALSE) {
 
-  # Define expected table names based on get_woah_outbreak_details output
-  expected_tables <- c(
-    "outbreak", "adminDivisions", "quantityUnit", "speciesQuantities",
-    "controlMeasures", "diagnosticMethods", "additionalMeasures",
-    "measuresNotImplemented"
+  # Define the specific tables requested by the user
+  requested_tables <- c(
+    "adminDivisions", "quantityUnit", "speciesQuantities",
+    "controlMeasures", "diagnosticMethods"
   )
-  # Initialize result list with empty tibbles for expected structure
-  empty_result_list <- purrr::map(expected_tables, ~ tibble::tibble()) %>%
-                       purrr::set_names(expected_tables)
+  # Initialize result list with empty tibbles for the requested structure
+  empty_result_list <- purrr::map(requested_tables, ~ tibble::tibble(outbreakId = integer(0), reportId = integer(0))) %>%
+                       purrr::set_names(requested_tables)
 
   if (verbose) message("--- Starting Full Outbreak Information Fetch (Multi-Table Output) ---")
 
@@ -951,11 +950,10 @@ get_woah_outbreaks_full_info <- function(start_date,
   # --- 5. Combine Corresponding Tibbles Across Outbreaks ---
   if (verbose) message("Step 5: Combining corresponding tables across all fetched outbreaks...")
 
-  # Get the names of the tables from the first successful result (should be consistent)
-  # Use expected_tables defined earlier for robustness
-  table_names <- expected_tables
+  # Use the requested table names for processing
+  table_names <- requested_tables
 
-  # Use map to iterate through table names, pluck the corresponding tibble from each list, and bind_rows
+  # Use map to iterate through requested table names, pluck the corresponding tibble from each list, and bind_rows
   combined_tables_list <- map(table_names, function(tbl_name) {
     if (verbose) message(sprintf("  Combining table: '%s'", tbl_name))
     # Pluck the tibble with name `tbl_name` from each element in `successful_details_lists`
@@ -1004,19 +1002,15 @@ get_woah_outbreaks_full_info <- function(start_date,
   if (verbose) message("Finished processing. Returning list of combined tables.")
   if (verbose) message("--- Full Outbreak Information Fetch Complete (Multi-Table Output) ---")
 
-  # Ensure all tables have outbreakId and reportId columns
+  # Ensure all requested tables have outbreakId and reportId columns and are relocated
   final_result <- map(combined_tables_list, function(tbl) {
-    if (!all(c("outbreakId", "reportId") %in% names(tbl))) {
-      if (nrow(tbl) > 0) {
-        tbl <- dplyr::mutate(tbl, 
-                            outbreakId = if ("outbreakId" %in% names(tbl)) outbreakId else NA_integer_,
-                            reportId = if ("reportId" %in% names(tbl)) reportId else NA_integer_)
-      }
-      dplyr::relocate(tbl, outbreakId, reportId)
-    } else {
-      tbl
-    }
-  }) %>% set_names(table_names)
+    # Ensure the columns exist, adding NA if necessary
+    if (!"outbreakId" %in% names(tbl)) tbl$outbreakId <- NA_integer_
+    if (!"reportId" %in% names(tbl)) tbl$reportId <- NA_integer_
+    # Relocate to the front
+    dplyr::relocate(tbl, outbreakId, reportId)
+  }) %>% set_names(table_names) # Ensure the final list has the correct names
 
+  # Return only the requested tables
   return(final_result)
 }
