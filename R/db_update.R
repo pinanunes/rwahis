@@ -444,115 +444,6 @@ end_dates <- (start_dates +
     # --- Process and Write Data ---
     batch_success <- TRUE # Track success within the batch writing phase
 
-            # 1. Process and Write Locations
-            tryCatch({
-                if (nrow(locations_data) > 0) {
-                    target_table <- table_names$locations
-                    pk_col <- "outbreakId"
-                    if (verbose) message(sprintf("Processing table: %s", target_table))
-
-                    # Ensure required columns exist
-                    if (!all(c("longitude", "latitude", pk_col) %in% names(locations_data))) {
-                         warning(sprintf("Required columns ('longitude', 'latitude', '%s') missing in locations data for this batch. Skipping write.", pk_col))
-                    } else {
-                        # Rename columns to match database schema
-                        locations_valid <- locations_data %>%
-                            rename(
-                                outbreak_id = outbreakId,
-                                report_id = reportId,
-                                event_id = eventId,
-                                is_location_approx = isLocationApprox,
-                                start_date = startDate,
-                                end_date = endDate,
-                                total_cases = totalCases,
-                                total_outbreaks = totalOutbreaks,
-                                oie_reference = oieReference,
-                                national_reference = nationalReference,
-                                disease_name = disease
-                            ) %>%
-                            filter(!is.na(longitude), !is.na(latitude), !is.na(outbreak_id))
-
-                        if (nrow(locations_valid) > 0) {
-                            # Check existing IDs using outbreak_id with proper error handling
-                            existing_ids <- tryCatch({
-                                query <- sprintf("SELECT outbreak_id FROM %s WHERE outbreak_id = ANY($1)", target_table)
-                                result <- DBI::dbGetQuery(conn, query, params = list(unique(locations_valid$outbreak_id)))
-                                if (nrow(result) > 0) result$outbreak_id else integer(0)
-                            }, error = function(e) {
-                                if (verbose) message(sprintf("Error checking existing IDs: %s", e$message))
-                                integer(0)
-                            })
-
-                            new_locations <- locations_valid %>% filter(!(.data[[pk_col]] %in% existing_ids))
-
-                            if (nrow(new_locations) > 0) {
-                                if (verbose) {
-                                    message(sprintf("  Found %d new location records to append.", nrow(new_locations)))
-                                    message("  First few rows of locations data:")
-                                    print(head(new_locations))
-                                }
-                                # Convert to sf object
-                                locations_sf <- sf::st_as_sf(new_locations, coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
-                                 
-                                 # Write using DBI with explicit transaction handling
-                                 tryCatch({
-                                    DBI::dbWithTransaction(conn, {
-                                      # Ensure sf package is loaded
-                                      if (!requireNamespace("sf", quietly = TRUE)) {
-                                        stop("Package 'sf' is required but not installed.")
-                                      }
-                                      # Convert sf object to data frame
-                                      locations_df <- as.data.frame(locations_sf)
-                                      if (verbose) message(sprintf("  Writing %d new records to %s...", nrow(new_locations), target_table))
-                                      DBI::dbWriteTable(
-                                        conn,
-                                        name = target_table,
-                                        value = locations_df,
-                                        append = TRUE,
-                                        row.names = FALSE
-                                      )
-                                      if (verbose) message(sprintf("  Appended %d new records to %s.", nrow(new_locations), target_table))
-                                    })
-                                  }, error = function(e) {
-                                    warning(sprintf("Failed to write to %s: %s", target_table, e$message))
-                                    if (verbose) message("Attempting to write records individually...")
-                                
-                                    # Fallback to writing records one by one
-                                    success_count <- 0
-                                    for (i in seq_len(nrow(locations_sf))) {
-                                      tryCatch({
-                                        # Convert sf object to data frame for each record
-                                        location_df <- as.data.frame(locations_sf[i,])
-                                        if (verbose) message(sprintf("  Writing record %d to %s...", i, target_table))
-                                        DBI::dbWriteTable(
-                                          conn,
-                                          name = target_table,
-                                          value = location_df,
-                                          append = TRUE,
-                                          row.names = FALSE
-                                        )
-                                        if (verbose) message(sprintf("  Successfully wrote record %d to %s.", i, target_table))
-                                        success_count <- success_count + 1
-                                      }, error = function(e) {
-                                        if (verbose) message(sprintf("  Failed to write record %d: %s", i, e$message))
-                                      })
-                                    }
-                                    if (verbose) message(sprintf("  Successfully wrote %d/%d records", success_count, nrow(locations_sf)))
-                                  })
-                            } else {
-                                if (verbose) message("  No new location records to append for this batch.")
-                            }
-                        } else {
-                             if (verbose) message("  No valid location records with coordinates and IDs found in this batch.")
-                        }
-                    }
-                }
-    }, error = function(e) {
-        warning(sprintf("Error processing/writing table '%s': %s", table_names$locations, e$message))
-        batch_success <<- FALSE
-    })
-
-
     # 2. Process and Write Other Tables from details_list
     purrr::walk(names(details_list), function(element_name) {
         if (!batch_success) return() # Skip if previous step failed
@@ -703,19 +594,145 @@ end_dates <- (start_dates +
 
     }) # End walk through details_list elements
 
+  # 1. Process and Write Locations
+            tryCatch({
+                if (nrow(locations_data) > 0) {
+                    target_table <- table_names$locations
+                    pk_col <- "outbreakId" # Original PK name before rename
+                    if (verbose) message(sprintf("Processing table: %s", target_table))
+
+                    # Ensure required columns exist
+                    if (!all(c("longitude", "latitude", pk_col) %in% names(locations_data))) {
+                         warning(sprintf("Required columns ('longitude', 'latitude', '%s') missing in locations data for this batch. Skipping write.", pk_col))
+                    } else {
+                        # Rename columns to match database schema
+                        locations_valid <- locations_data %>%
+                            rename(
+                                outbreak_id = outbreakId,
+                                report_id = reportId,
+                                event_id = eventId,
+                                is_location_approx = isLocationApprox,
+                                start_date = startDate,
+                                end_date = endDate,
+                                total_cases = totalCases,
+                                total_outbreaks = totalOutbreaks,
+                                oie_reference = oieReference,
+                                national_reference = nationalReference,
+                                disease_name = disease
+                            ) %>%
+                            filter(!is.na(longitude), !is.na(latitude), !is.na(outbreak_id))
+
+                        if (nrow(locations_valid) > 0) {
+                            # Check existing IDs using outbreak_id with proper error handling
+                            existing_ids <- tryCatch({
+                                query <- sprintf("SELECT outbreak_id FROM %s WHERE outbreak_id = ANY($1)", target_table)
+                                result <- DBI::dbGetQuery(conn, query, params = list(unique(locations_valid$outbreak_id)))
+                                if (nrow(result) > 0) result$outbreak_id else integer(0)
+                            }, error = function(e) {
+                                if (verbose) message(sprintf("Error checking existing IDs: %s", e$message))
+                                integer(0)
+                            })
+
+                            # Use the renamed primary key column 'outbreak_id' for filtering
+                            new_locations <- locations_valid %>% filter(!(.data[["outbreak_id"]] %in% existing_ids))
+
+                            if (nrow(new_locations) > 0) {
+                                if (verbose) {
+                                    message(sprintf("  Found %d new location records to append.", nrow(new_locations)))
+                                    # message("  First few rows of locations data:") # Print before sf conversion might be less useful
+                                    # print(head(new_locations))
+                                }
+                                # Convert to sf object
+                                locations_sf <- sf::st_as_sf(new_locations, coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
+
+                                 # Write using DBI with explicit transaction handling
+                                 tryCatch({
+                                    DBI::dbWithTransaction(conn, {
+                                      # Ensure sf package is loaded
+                                      if (!requireNamespace("sf", quietly = TRUE)) {
+                                        stop("Package 'sf' is required but not installed.")
+                                      }
+                                      # Convert sf object to data frame
+                                      locations_df <- as.data.frame(locations_sf)
+                                      # --- DEBUG PRINT ---
+                                      if (verbose) {
+                                          message("  DEBUG: Head of locations_df before writing:")
+                                          print(utils::head(locations_df))
+                                      }
+                                      # --- END DEBUG PRINT ---
+                                      if (verbose) message(sprintf("  Writing %d new records to %s...", nrow(locations_df), target_table)) # Use nrow(locations_df)
+                                      DBI::dbWriteTable(
+                                        conn,
+                                        name = target_table,
+                                        value = locations_df,
+                                        append = TRUE,
+                                        row.names = FALSE
+                                      )
+                                      if (verbose) message(sprintf("  Appended %d new records to %s.", nrow(new_locations), target_table))
+                                    })
+                                  }, error = function(e) {
+                                    warning(sprintf("Failed to write to %s: %s", target_table, e$message))
+                                    if (verbose) message("Attempting to write records individually...")
+
+                                    # Fallback to writing records one by one
+                                    success_count <- 0
+                                    for (i in seq_len(nrow(locations_sf))) {
+                                      tryCatch({
+                                        # Convert sf object to data frame for each record
+                                        location_df <- as.data.frame(locations_sf[i,])
+                                        if (verbose) message(sprintf("  Writing record %d to %s...", i, target_table))
+                                        DBI::dbWriteTable(
+                                          conn,
+                                          name = target_table,
+                                          value = location_df,
+                                          append = TRUE,
+                                          row.names = FALSE
+                                        )
+                                        if (verbose) message(sprintf("  Successfully wrote record %d to %s.", i, target_table))
+                                        success_count <- success_count + 1
+                                      }, error = function(e) {
+                                        # Correctly handle error when writing individual record
+                                        if (verbose) message(sprintf("  Failed to write record %d individually: %s", i, e$message))
+                                        # Indicate failure for this record, but allow loop to continue
+                                      }) # Close tryCatch for individual write
+                                    } # Close for loop
+                                    # If fallback was attempted, report how many succeeded
+                                    if (verbose) message(sprintf("  Fallback write attempt finished. %d out of %d records successfully written individually.", success_count, nrow(locations_sf)))
+                                    # Ensure the overall batch is marked as failed if the bulk write failed
+                                    batch_success <<- FALSE
+                                  }) # Close tryCatch for bulk write
+
+                            } else {
+                                if (verbose) message(sprintf("  No new location records to append based on outbreak_id."))
+                            }
+                        } else {
+                             if(verbose) message("  No valid location rows with coordinates and outbreak_id found.")
+                        }
+                    }
+                } else {
+                     if(verbose) message("  No location data fetched for this batch.")
+                }
+            }, error = function(e) {
+                 warning(sprintf("Error processing/writing table '%s': %s", table_names$locations, e$message))
+                 batch_success <<- FALSE
+            }) # End tryCatch for locations processing/writing
+
+    # --- Batch Completion ---
     if (!batch_success) {
-        overall_success <- FALSE # Mark overall failure if any part of batch write failed
         warning(sprintf("One or more errors occurred during database write for batch %s - %s.", int_start, int_end))
+        overall_success <- FALSE # Mark overall failure if any batch fails
     }
 
-  } # End loop through date intervals
+  } # End loop through date_intervals
 
+  # --- Final Message ---
   if (verbose) message("\n--- Database Update Process Finished ---")
   if (!overall_success) {
-     message("Process completed with errors or warnings. Please review messages.")
+    message("Process completed with errors or warnings. Please review messages.")
   } else {
-     message("Process completed successfully.")
+    if (verbose) message("Process completed successfully.")
   }
 
   return(invisible(overall_success))
+
 }
