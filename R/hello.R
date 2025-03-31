@@ -525,32 +525,64 @@ safe_extract_to_tibble <- function(data_list, element_name, outbreak_id, report_
   element <- purrr::pluck(data_list, element_name)
   id_cols <- list(outbreakId = outbreak_id, reportId = report_id) # Store IDs
 
-  # Handle NULL or non-list elements gracefully
-  if (is.null(element) || !is.list(element)) {
-    # Return an empty tibble structure if element is missing or invalid type
-    # We don't know the columns, so just return IDs
-    return(tibble::tibble(outbreakId = integer(0), reportId = integer(0)))
-  }
-
-  # Handle empty lists
-  if (length(element) == 0) {
-     # Return empty tibble with IDs if element is an empty list
-     return(tibble::tibble(outbreakId = integer(0), reportId = integer(0)))
+  # Special handling for outbreak element
+  if (element_name == "outbreak") {
+    # Always return at least outbreakId and reportId columns
+    if (is.null(element) || !is.list(element) || length(element) == 0) {
+      return(tibble::tibble(outbreakId = outbreak_id, reportId = report_id))
+    }
+    
+    # Handle nested outbreak data structure
+    if (is.list(element) && !is.data.frame(element)) {
+      # Check for common outbreak fields
+      outbreak_fields <- c("id", "startDate", "endDate", "description", "epiUnitType")
+      result <- tibble::tibble(outbreakId = outbreak_id, reportId = report_id)
+      
+      # Add available fields
+      for (field in outbreak_fields) {
+        if (field %in% names(element)) {
+          result[[field]] <- element[[field]]
+        }
+      }
+      return(result)
+    }
+  } else {
+    # Handle NULL or non-list elements gracefully for other elements
+    if (is.null(element) || !is.list(element)) {
+      return(tibble::tibble(outbreakId = integer(0), reportId = integer(0)))
+    }
+    # Handle empty lists
+    if (length(element) == 0) {
+      return(tibble::tibble(outbreakId = integer(0), reportId = integer(0)))
+    }
   }
 
   # Attempt conversion based on structure
   df <- tryCatch({
-    # Check if it's a list of lists (potential multiple rows) or a single named list (single row)
+    # Special handling for outbreak element to ensure IDs are included
+    if (element_name == "outbreak") {
+      result <- if (is.data.frame(element)) {
+        tibble::as_tibble(element)
+      } else {
+        tibble::as_tibble(element)
+      }
+      # Ensure outbreakId and reportId are set
+      if (!"outbreakId" %in% names(result)) {
+        result$outbreakId <- outbreak_id
+      }
+      if (!"reportId" %in% names(result)) {
+        result$reportId <- report_id
+      }
+      return(result)
+    }
+    
+    # Standard handling for other elements
     is_list_of_lists <- all(sapply(element, is.list)) && !is.data.frame(element)
-
     if (is_list_of_lists) {
-      # Use map_dfr for robustness with potentially varying structures within the list
       purrr::map_dfr(element, ~ tibble::as_tibble(.x), .id = NULL)
     } else if (!is.data.frame(element)) {
-      # Assume it's a single named list, convert to single-row tibble
       tibble::as_tibble(element)
     } else {
-      # It's already a data frame
       tibble::as_tibble(element)
     }
   }, error = function(e) {
