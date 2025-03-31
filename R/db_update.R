@@ -410,6 +410,7 @@ end_dates <- (start_dates +
         } else {
              if (verbose) message(sprintf("Fetched %d location records.", nrow(locations_data)))
              if (verbose) message("\nFetching full outbreak details...")
+             if (verbose) message(sprintf("Fetched %d location records.", head(locations_data)))
              details_list <- get_woah_outbreaks_full_info(
                  start_date = int_start,
                  end_date = int_end,
