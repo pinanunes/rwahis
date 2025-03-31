@@ -195,7 +195,7 @@ update_woah_db <- function(start_date,
   # NOTE: These schemas are basic examples. Column types (esp. VARCHAR lengths)
   # and constraints (NULL/NOT NULL, primary/foreign keys) should be carefully
   # reviewed and adjusted based on actual data and database design needs.
-
+   print(head(locations)) 
   # Locations Table
   locations_schema <- sprintf("
     CREATE TABLE %s (
