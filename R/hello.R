@@ -924,24 +924,27 @@ get_woah_outbreaks_full_info <- function(start_date,
 
     if (length(valid_tibbles) == 0) {
         if (verbose) message(sprintf("    No data found for table '%s' in any outbreak.", tbl_name))
-        # Return an empty tibble with known ID columns if possible, otherwise just empty
-        base_empty <- tibble::tibble(outbreakId = integer(0), reportId = integer(0))
-        # Try to get column names from the first list if available, otherwise return base empty
-         first_list_tbl <- purrr::pluck(successful_details_lists, 1, tbl_name, .default = NULL)
-         if (!is.null(first_list_tbl) && is.data.frame(first_list_tbl)) {
-             # Create empty tibble with same columns as the first instance found
-             empty_cols <- purrr::map(first_list_tbl, ~ vector(class(.), 0))
-             return(tibble::as_tibble(empty_cols))
-         } else {
-             return(base_empty) # Fallback
-         }
+        # Return an empty tibble with outbreakId and reportId columns
+        return(tibble::tibble(outbreakId = integer(0), reportId = integer(0)))
     }
 
     # Combine the valid tibbles using bind_rows (handles differing columns by filling with NA)
-    # Using purrr::list_rbind for potentially better performance and name repair options
     combined_tbl <- tryCatch({
-        purrr::list_rbind(valid_tibbles)
-        # dplyr::bind_rows(valid_tibbles) # Alternative
+        result <- dplyr::bind_rows(valid_tibbles)
+        # Ensure outbreakId and reportId columns exist
+        if (!all(c("outbreakId", "reportId") %in% names(result))) {
+          if ("outbreakId" %in% names(result)) {
+            result <- dplyr::mutate(result, reportId = NA_integer_)
+          } else if ("reportId" %in% names(result)) {
+            result <- dplyr::mutate(result, outbreakId = NA_integer_)
+          } else {
+            result <- dplyr::mutate(result, 
+                                   outbreakId = NA_integer_,
+                                   reportId = NA_integer_)
+          }
+        }
+        # Move ID columns to front
+        dplyr::relocate(result, outbreakId, reportId)
     }, error = function(e) {
         warning(sprintf("Error combining tibbles for '%s': %s. Returning empty tibble.", tbl_name, e$message))
         # Return empty tibble with IDs on error
@@ -959,5 +962,19 @@ get_woah_outbreaks_full_info <- function(start_date,
   if (verbose) message("Finished processing. Returning list of combined tables.")
   if (verbose) message("--- Full Outbreak Information Fetch Complete (Multi-Table Output) ---")
 
-  return(combined_tables_list)
+  # Ensure all tables have outbreakId and reportId columns
+  final_result <- map(combined_tables_list, function(tbl) {
+    if (!all(c("outbreakId", "reportId") %in% names(tbl))) {
+      if (nrow(tbl) > 0) {
+        tbl <- dplyr::mutate(tbl, 
+                            outbreakId = if ("outbreakId" %in% names(tbl)) outbreakId else NA_integer_,
+                            reportId = if ("reportId" %in% names(tbl)) reportId else NA_integer_)
+      }
+      dplyr::relocate(tbl, outbreakId, reportId)
+    } else {
+      tbl
+    }
+  }) %>% set_names(table_names)
+
+  return(final_result)
 }
