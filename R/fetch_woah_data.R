@@ -245,6 +245,11 @@ fetch_woah_data <- function(start_date,
       }
        # Rename columns after combining, before returning
        if (!is.null(combined_locations_data)) {
+           if (verbose) {
+               message("Columns in location data before renaming:")
+               message(paste(names(combined_locations_data), collapse = ", "))
+           }
+           
            rename_mapping <- list(
                "outbreakId" = "outbreak_id",
                "reportId" = "report_id", 
@@ -262,9 +267,23 @@ fetch_woah_data <- function(start_date,
            # Only keep mappings where the source column exists
            valid_mappings <- rename_mapping[names(rename_mapping) %in% names(combined_locations_data)]
            
+           if (verbose) {
+               message("Attempting to rename these columns:")
+               message(paste(names(valid_mappings), "->", unlist(valid_mappings), collapse = "\n"))
+           }
+           
            if(length(valid_mappings) > 0) {
-               combined_locations_data <- combined_locations_data %>%
-                   rename(!!!valid_mappings)
+               combined_locations_data <- tryCatch({
+                   combined_locations_data %>% rename(!!!valid_mappings)
+               }, error = function(e) {
+                   warning("Error renaming columns: ", e$message)
+                   if (verbose) {
+                       message("Original column names kept due to rename error")
+                   }
+                   combined_locations_data
+               })
+           } else if (verbose) {
+               message("No columns to rename - no matching source columns found")
            }
        }
   } else {
