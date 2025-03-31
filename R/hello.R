@@ -956,44 +956,43 @@ get_woah_outbreaks_full_info <- function(start_date,
   # Use map to iterate through requested table names, pluck the corresponding tibble from each list, and bind_rows
   combined_tables_list <- map(table_names, function(tbl_name) {
     if (verbose) message(sprintf("  Combining table: '%s'", tbl_name))
-    # Pluck the tibble with name `tbl_name` from each element in `successful_details_lists`
-    list_of_tibbles_for_name <- map(successful_details_lists, ~ purrr::pluck(.x, tbl_name))
-
-    # Filter out any NULLs or non-dataframes that might have slipped through (shouldn't happen with safe_extract_to_tibble)
-    valid_tibbles <- keep(list_of_tibbles_for_name, ~ is.data.frame(.x) && nrow(.x) > 0)
-
-    if (length(valid_tibbles) == 0) {
-        if (verbose) message(sprintf("    No data found for table '%s' in any outbreak.", tbl_name))
-        # Return an empty tibble with outbreakId and reportId columns
-        return(tibble::tibble(outbreakId = integer(0), reportId = integer(0)))
+    
+    # Initialize empty tibble with outbreakId and reportId columns
+    combined_tbl <- tibble::tibble(outbreakId = integer(0), reportId = integer(0))
+    
+    # Process each outbreak's data
+    for (i in seq_along(successful_details_lists)) {
+      outbreak_data <- successful_details_lists[[i]]
+      current_tbl <- purrr::pluck(outbreak_data, tbl_name)
+      
+      # Skip if not a data frame or empty
+      if (!is.data.frame(current_tbl) || nrow(current_tbl) == 0) next
+      
+      # Get the reportId and outbreakId from the original pairs
+      report_id <- report_outbreak_pairs$reportId[i]
+      outbreak_id <- report_outbreak_pairs$outbreakId[i]
+      
+      # Ensure IDs are set in the current table
+      if (!"outbreakId" %in% names(current_tbl)) {
+        current_tbl$outbreakId <- outbreak_id
+      }
+      if (!"reportId" %in% names(current_tbl)) {
+        current_tbl$reportId <- report_id
+      }
+      
+      # Bind to the combined table
+      combined_tbl <- dplyr::bind_rows(combined_tbl, current_tbl)
     }
-
-    # Combine the valid tibbles using bind_rows (handles differing columns by filling with NA)
-    combined_tbl <- tryCatch({
-        result <- dplyr::bind_rows(valid_tibbles)
-        # Ensure outbreakId and reportId columns exist
-        if (!all(c("outbreakId", "reportId") %in% names(result))) {
-          if ("outbreakId" %in% names(result)) {
-            result <- dplyr::mutate(result, reportId = NA_integer_)
-          } else if ("reportId" %in% names(result)) {
-            result <- dplyr::mutate(result, outbreakId = NA_integer_)
-          } else {
-            result <- dplyr::mutate(result, 
-                                   outbreakId = NA_integer_,
-                                   reportId = NA_integer_)
-          }
-        }
-        # Move ID columns to front
-        dplyr::relocate(result, outbreakId, reportId)
-    }, error = function(e) {
-        warning(sprintf("Error combining tibbles for '%s': %s. Returning empty tibble.", tbl_name, e$message))
-        # Return empty tibble with IDs on error
-        return(tibble::tibble(outbreakId = integer(0), reportId = integer(0)))
-    })
-
-    if (verbose) message(sprintf("    Combined '%s' table has %d rows.", tbl_name, nrow(combined_tbl)))
-    return(combined_tbl)
-
+    
+    if (nrow(combined_tbl) == 0) {
+      if (verbose) message(sprintf("    No data found for table '%s' in any outbreak.", tbl_name))
+    } else {
+      if (verbose) message(sprintf("    Combined '%s' table has %d rows.", tbl_name, nrow(combined_tbl)))
+    }
+    
+    # Ensure IDs are first columns
+    combined_tbl %>% dplyr::relocate(outbreakId, reportId)
+    
   }) %>% set_names(table_names) # Set the names of the final list
 
 
