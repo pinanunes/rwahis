@@ -496,86 +496,58 @@ get_woah_outbreaks <- function(start_date,
 
 
 # --- Helper Function: safe_extract_to_tibble (Internal) ---
-# Safely extracts a named element from the main list, converts to tibble, adds IDs.
-safe_extract_to_tibble <- function(data_list, element_name, outbreak_id, report_id) {
+# Safely extracts a named element from the main list, converts to tibble, adds IDs and timestamp.
+safe_extract_to_tibble <- function(data_list, element_name, outbreak_id, report_id, event_id) {
+  fetch_time <- Sys.time() # Capture timestamp
   element <- purrr::pluck(data_list, element_name)
-  id_cols <- list(outbreakId = outbreak_id, reportId = report_id) # Store IDs
+  # Store IDs and timestamp
+  id_cols <- list(
+    outbreakId = outbreak_id,
+    reportId = report_id,
+    eventId = event_id,
+    fetch_timestamp = fetch_time
+  )
 
-  # Special handling for outbreak element
-  if (element_name == "outbreak") {
-    # Always return at least outbreakId and reportId columns
-    if (is.null(element) || !is.list(element) || length(element) == 0) {
-      return(tibble::tibble(outbreakId = outbreak_id, reportId = report_id))
-    }
-    
-    # Handle nested outbreak data structure
-    if (is.list(element) && !is.data.frame(element)) {
-      # Check for common outbreak fields
-      outbreak_fields <- c("id", "startDate", "endDate", "description", "epiUnitType")
-      result <- tibble::tibble(outbreakId = outbreak_id, reportId = report_id)
-      
-      # Add available fields
-      for (field in outbreak_fields) {
-        if (field %in% names(element)) {
-          result[[field]] <- element[[field]]
-        }
-      }
-      return(result)
-    }
-  } else {
-    # Handle NULL or non-list elements gracefully for other elements
-    if (is.null(element) || !is.list(element)) {
-      return(tibble::tibble(outbreakId = integer(0), reportId = integer(0)))
-    }
-    # Handle empty lists
-    if (length(element) == 0) {
-      return(tibble::tibble(outbreakId = integer(0), reportId = integer(0)))
-    }
+  # Define the structure for an empty tibble with all required ID/timestamp columns
+  empty_tibble_structure <- tibble::tibble(
+      outbreakId = integer(0),
+      reportId = integer(0),
+      eventId = integer(0),
+      fetch_timestamp = as.POSIXct(character(0))
+  )
+
+  # Handle NULL, non-list, or empty list elements gracefully for all elements
+  if (is.null(element) || !is.list(element) || length(element) == 0) {
+      return(empty_tibble_structure)
   }
 
-  # Attempt conversion based on structure
+  # Attempt conversion based on structure (consistent handling for all elements)
   df <- tryCatch({
-    # Special handling for outbreak element to ensure IDs are included
-    if (element_name == "outbreak") {
-      result <- if (is.data.frame(element)) {
-        tibble::as_tibble(element)
+      is_list_of_lists <- all(sapply(element, is.list)) && !is.data.frame(element)
+      if (is_list_of_lists) {
+          purrr::map_dfr(element, ~ tibble::as_tibble(.x), .id = NULL)
+      } else if (!is.data.frame(element)) {
+          tibble::as_tibble(element) # Handles single-level lists
       } else {
-        tibble::as_tibble(element)
+          tibble::as_tibble(element) # Handles elements that are already data frames
       }
-      # Ensure outbreakId and reportId are set
-      if (!"outbreakId" %in% names(result)) {
-        result$outbreakId <- outbreak_id
-      }
-      if (!"reportId" %in% names(result)) {
-        result$reportId <- report_id
-      }
-      return(result)
-    }
-    
-    # Standard handling for other elements
-    is_list_of_lists <- all(sapply(element, is.list)) && !is.data.frame(element)
-    if (is_list_of_lists) {
-      purrr::map_dfr(element, ~ tibble::as_tibble(.x), .id = NULL)
-    } else if (!is.data.frame(element)) {
-      tibble::as_tibble(element)
-    } else {
-      tibble::as_tibble(element)
-    }
   }, error = function(e) {
-    warning(sprintf("Could not convert element '%s' to tibble for outbreak %d, report %d. Error: %s",
-                    element_name, outbreak_id, report_id, e$message))
-    # Return empty tibble with IDs on conversion error
-    return(tibble::tibble(outbreakId = integer(0), reportId = integer(0)))
+      warning(sprintf("Could not convert element '%s' to tibble for outbreak %d, report %d, event %d. Error: %s",
+                      element_name, outbreak_id, report_id, event_id, e$message))
+      # Return empty tibble with standard structure on conversion error
+      return(empty_tibble_structure)
   })
 
-  # Add IDs if conversion was successful and resulted in rows
+  # Add IDs and timestamp if conversion was successful and resulted in rows
   if (nrow(df) > 0) {
-    df <- dplyr::bind_cols(tibble::tibble(!!!id_cols, .rows = nrow(df)), df)
-    # Optional: Relocate IDs to front if desired, but bind_cols puts them there anyway
-    # df <- dplyr::relocate(df, outbreakId, reportId)
+      # Create the ID/timestamp tibble with the correct number of rows
+      ids_df <- tibble::tibble(!!!id_cols, .rows = nrow(df))
+      df <- dplyr::bind_cols(ids_df, df)
+      # Ensure IDs and timestamp are the first columns
+      df <- dplyr::relocate(df, outbreakId, reportId, eventId, fetch_timestamp)
   } else {
-     # If conversion resulted in 0 rows (e.g. from empty list), ensure ID columns exist
-     df <- tibble::tibble(outbreakId = integer(0), reportId = integer(0))
+      # If conversion resulted in 0 rows, return the standard empty structure
+      df <- empty_tibble_structure
   }
 
   return(df)
@@ -594,90 +566,100 @@ safe_extract_to_tibble <- function(data_list, element_name, outbreak_id, report_
 #' @importFrom jsonlite fromJSON validate
 #' @importFrom purrr %||%
 #' @importFrom tibble tibble as_tibble
-#' @importFrom dplyr bind_rows relocate
+#' @importFrom dplyr bind_rows relocate select
+#' @importFrom tidyr unnest_wider
 #' 
-#' @param report_id Numeric ID of the report containing the outbreak
-#' @param outbreak_id Numeric ID of the specific outbreak
-#' @param language Language code (default: "en")
-#' @param verbose Logical: Print progress messages? (Default: FALSE)
+#' @param report_id Numeric ID of the report containing the outbreak.
+#' @param outbreak_id Numeric ID of the specific outbreak.
+#' @param event_id Numeric ID of the parent event (added parameter).
+#' @param language Language code (default: "en").
+#' @param verbose Logical: Print progress messages? (Default: FALSE).
 #'
-#' @return A named list of tibbles containing:
+#' @return A named list of tibbles. Each tibble includes `outbreakId`, `reportId`,
+#'   `eventId`, and `fetch_timestamp` columns, along with the specific data for:
 #' \itemize{
-#'   \item outbreak: Basic outbreak information
-#'   \item adminDivisions: Administrative divisions affected
-#'   \item speciesQuantities: Species and quantities affected
-#'   \item controlMeasures: Control measures implemented
-#'   \item diagnosticMethods: Diagnostic methods used
-#'   \item additionalMeasures: Additional measures taken
-#'   \item measuresNotImplemented: Measures not implemented
-#' }
+#'   \item `outbreak`: Basic outbreak information
+#'   \item `adminDivisions`: Administrative divisions affected
+#'   \item `quantityUnit`: Unit used for quantities
+#'   \item `speciesQuantities`: Species and quantities affected
+#'   \item `controlMeasures`: Control measures implemented
+#'   \item `diagnosticMethods`: Diagnostic methods used
+#'   \item `additionalMeasures`: Additional measures taken
+#'   \item `measuresNotImplemented`: Measures not implemented
+#' Returns NULL if the API call fails or returns invalid data.
 #' @examples
 #' \dontrun{
-#'   # Get details for outbreak with report ID 123 and outbreak ID 456
-#'   details <- get_woah_outbreak_details(123, 456)
-#'   print(details$outbreak)
-#'   print(details$speciesQuantities)
+#'   # Assuming event_id 789 is associated
+#'   details <- get_woah_outbreak_details(report_id = 123, outbreak_id = 456, event_id = 789)
+#'   if (!is.null(details)) {
+#'     print(details$outbreak)
+#'     print(details$speciesQuantities)
+#'   }
 #' }
-#' @export
-get_woah_outbreak_details <- function(report_id, outbreak_id, language = "en", verbose = FALSE) {
+#' @noRd # Keep as internal helper
+get_woah_outbreak_details <- function(report_id, outbreak_id, event_id, language = "en", verbose = FALSE) {
 
-  # Input validation (keep existing)
+  # Input validation
   if (!is.numeric(report_id) || length(report_id) != 1 || report_id <= 0) {
-    stop("report_id must be a single positive number.")
+      stop("report_id must be a single positive number.")
   }
   if (!is.numeric(outbreak_id) || length(outbreak_id) != 1 || outbreak_id <= 0) {
-    stop("outbreak_id must be a single positive number.")
+      stop("outbreak_id must be a single positive number.")
+  }
+  if (!is.numeric(event_id) || length(event_id) != 1 || event_id <= 0) {
+      stop("event_id must be a single positive number.") # Validate new parameter
   }
 
-  # Ensure report_id and outbreak_id are integers for consistency
+  # Ensure IDs are integers for consistency
   report_id_int <- as.integer(report_id)
   outbreak_id_int <- as.integer(outbreak_id)
+  event_id_int <- as.integer(event_id) # Convert new parameter
 
   api_base_url <- "https://wahis.woah.org/api/v1/pi/review/report"
   api_path <- file.path(report_id_int, "outbreak", outbreak_id_int, "all-information")
   api_url <- modify_url(url = file.path(api_base_url, api_path), query = list(language = language))
 
-  if (verbose) message(sprintf("Fetching details for Report ID: %d, Outbreak ID: %d", report_id_int, outbreak_id_int))
+  if (verbose) message(sprintf("Fetching details for Report ID: %d, Outbreak ID: %d, Event ID: %d", report_id_int, outbreak_id_int, event_id_int))
 
   # --- API Call and Initial Parsing ---
   parsed_data <- tryCatch({
-      response <- GET(
-          url = api_url,
-          add_headers("Accept" = "application/json"),
-          timeout(60)
-      )
+    response <- GET(
+        url = api_url,
+        add_headers("Accept" = "application/json"),
+        timeout(60)
+    )
 
-      content_raw <- content(response, as = "text", encoding = "UTF-8") # Get raw content first
+    content_raw <- content(response, as = "text", encoding = "UTF-8") # Get raw content first
 
-      if (status_code(response) == 404) {
-          if (verbose) message(sprintf("Outbreak details not found (404) for Report ID: %d, Outbreak ID: %d", report_id_int, outbreak_id_int))
-          return(NULL) # Return NULL specifically for 404
-      }
+    if (status_code(response) == 404) {
+        if (verbose) message(sprintf("Outbreak details not found (404) for Report ID: %d, Outbreak ID: %d, Event ID: %d", report_id_int, outbreak_id_int, event_id_int))
+        return(NULL) # Return NULL specifically for 404
+    }
 
-      # Check for other errors after checking 404
-      stop_for_status(response, task = sprintf("fetch outbreak details (Report: %d, Outbreak: %d)", report_id_int, outbreak_id_int))
+    # Check for other errors after checking 404
+    stop_for_status(response, task = sprintf("fetch outbreak details (Report: %d, Outbreak: %d, Event: %d)", report_id_int, outbreak_id_int, event_id_int))
 
-      if (verbose && nzchar(content_raw)) {
-          message(sprintf("--- Raw JSON Response (Report: %d, Outbreak: %d) ---", report_id_int, outbreak_id_int))
-          message(substr(content_raw, 1, 1000), if(nchar(content_raw)>1000) "..." else "") # Print truncated raw JSON
-          message("-----------------------------------------------------")
-      }
+    if (verbose && nzchar(content_raw)) {
+        message(sprintf("--- Raw JSON Response (Report: %d, Outbreak: %d, Event: %d) ---", report_id_int, outbreak_id_int, event_id_int))
+        message(substr(content_raw, 1, 1000), if(nchar(content_raw)>1000) "..." else "") # Print truncated raw JSON
+        message("-----------------------------------------------------")
+    }
 
-      if (nchar(content_raw) == 0 || !validate(content_raw)) {
-          warning(sprintf("Received empty or invalid JSON response for outbreak details (Report: %d, Outbreak: %d).", report_id_int, outbreak_id_int))
-          # Instead of returning NULL here, let the error handler below catch it
-          stop("Empty or invalid JSON content received.")
-      }
+    if (nchar(content_raw) == 0 || !validate(content_raw)) {
+        warning(sprintf("Received empty or invalid JSON response for outbreak details (Report: %d, Outbreak: %d, Event: %d).", report_id_int, outbreak_id_int, event_id_int))
+        # Instead of returning NULL here, let the error handler below catch it
+        stop("Empty or invalid JSON content received.")
+    }
 
-      # Parse JSON *after* checks
-      parsed <- fromJSON(content_raw, flatten = FALSE) # flatten=FALSE initially to better handle nested lists
+    # Parse JSON *after* checks
+    parsed <- fromJSON(content_raw, flatten = FALSE) # flatten=FALSE initially to better handle nested lists
 
-      if (verbose) message(sprintf("Successfully fetched and parsed details for Report ID: %d, Outbreak ID: %d", report_id_int, outbreak_id_int))
-      return(parsed)
+    if (verbose) message(sprintf("Successfully fetched and parsed details for Report ID: %d, Outbreak ID: %d, Event ID: %d", report_id_int, outbreak_id_int, event_id_int))
+    return(parsed)
 
   }, error = function(e) {
     # Centralized error handling
-    message(sprintf("\nError during API call or parsing for outbreak details (Report: %d, Outbreak: %d).", report_id_int, outbreak_id_int))
+    message(sprintf("\nError during API call or parsing for outbreak details (Report: %d, Outbreak: %d, Event: %d).", report_id_int, outbreak_id_int, event_id_int))
     status_code_val <- if (exists("response", inherits = FALSE)) tryCatch(status_code(response), error = function(e2) NA) else NA
     response_content_on_error <- if (exists("content_raw", inherits = FALSE)) content_raw else ""
 
@@ -711,7 +693,8 @@ get_woah_outbreak_details <- function(report_id, outbreak_id, language = "en", v
                                                         data_list = parsed_data,
                                                         element_name = .x,
                                                         outbreak_id = outbreak_id_int,
-                                                        report_id = report_id_int
+                                                        report_id = report_id_int,
+                                                        event_id = event_id_int # Pass event_id here
                                                       )) %>%
                   purrr::set_names(elements_to_extract) # Name the list elements
 
@@ -720,73 +703,95 @@ get_woah_outbreak_details <- function(report_id, outbreak_id, language = "en", v
   # Post-process speciesQuantities to unnest further if it exists and has rows
   if ("speciesQuantities" %in% names(details_list) && nrow(details_list$speciesQuantities) > 0) {
       if(verbose) message("Post-processing speciesQuantities...")
-      sq_raw <- details_list$speciesQuantities # Keep original IDs
+      # Use tidyr::unnest_wider directly, handling potential errors if columns don't exist
+      # Preserve original ID columns
+      id_cols_sq <- c("outbreakId", "reportId", "eventId", "fetch_timestamp")
+      sq_processed <- details_list$speciesQuantities %>%
+          tidyr::unnest_wider(any_of(c("totalQuantities", "newQuantities", "speciesType")),
+                              names_sep = "_",
+                              names_repair = "unique") %>%
+          # Ensure ID columns are preserved and relocated
+          dplyr::relocate(dplyr::all_of(id_cols_sq))
 
-      # Define a function to safely unnest and select, handling NULLs
-      safe_unnest <- function(df, col_to_unnest) {
-          if (!col_to_unnest %in% names(df)) return(tibble::tibble()) # Return empty if col missing
-          # Ensure the column is list-like before unnesting
-          if (!is.list(df[[col_to_unnest]])) return(tibble::tibble())
-
-          # Use tryCatch around unnest_wider
-          tryCatch({
-              tidyr::unnest_wider(df, col = {{col_to_unnest}}, names_sep = "_")
-          }, error = function(e) {
-              warning(sprintf("Failed to unnest column '%s': %s", col_to_unnest, e$message))
-              return(tibble::tibble()) # Return empty tibble on error
-          })
-      }
-
-      # Unnest step-by-step, preserving IDs
-      sq_total <- safe_unnest(sq_raw, "totalQuantities")
-      sq_new <- safe_unnest(sq_raw, "newQuantities")
-      sq_type <- safe_unnest(sq_raw, "speciesType")
-
-      # Combine the unnested parts with the original IDs
-      # Start with IDs
-      sq_processed <- sq_raw %>% select(outbreakId, reportId)
-
-      # Add columns from unnested parts if they exist and have rows
-      if (nrow(sq_total) > 0) sq_processed <- dplyr::bind_cols(sq_processed, sq_total %>% select(-any_of(c("outbreakId", "reportId"))))
-      if (nrow(sq_new) > 0) sq_processed <- dplyr::bind_cols(sq_processed, sq_new %>% select(-any_of(c("outbreakId", "reportId"))))
-      if (nrow(sq_type) > 0) sq_processed <- dplyr::bind_cols(sq_processed, sq_type %>% select(-any_of(c("outbreakId", "reportId"))))
-
-      # Assign back to the list
       details_list$speciesQuantities <- sq_processed
   } else {
-      # Ensure speciesQuantities exists even if empty, with ID columns
-      details_list$speciesQuantities <- tibble::tibble(outbreakId = integer(0), reportId = integer(0))
+      # Ensure speciesQuantities exists even if empty, with standard ID/timestamp columns
+      details_list$speciesQuantities <- tibble::tibble(
+          outbreakId = integer(0), reportId = integer(0), eventId = integer(0),
+          fetch_timestamp = as.POSIXct(character(0))
+      )
   }
 
-  # Similar post-processing for 'outbreak' if needed (e.g., unnest epiUnitType, description)
+  # Similar post-processing for 'outbreak'
   if ("outbreak" %in% names(details_list) && nrow(details_list$outbreak) > 0) {
       if(verbose) message("Post-processing outbreak...")
+      id_cols_ob <- c("outbreakId", "reportId", "eventId", "fetch_timestamp")
       details_list$outbreak <- details_list$outbreak %>%
-          tidyr::unnest_wider(any_of(c("epiUnitType", "description")), names_sep = "_", names_repair = "unique") %>%
-          # Rename potentially duplicated columns after unnesting
+          tidyr::unnest_wider(any_of(c("disease", "epiUnitType", "description")), names_sep = "_", names_repair = "unique") %>%
+          dplyr::relocate(dplyr::all_of(id_cols_ob)) %>%
+          # Rename potentially duplicated columns after unnesting (e.g., description_original...1)
           dplyr::rename_with(~gsub("\\.\\.\\.[0-9]+$", "", .), dplyr::matches("\\.\\.\\.[0-9]+$"))
   } else {
-       details_list$outbreak <- tibble::tibble(outbreakId = integer(0), reportId = integer(0))
+       details_list$outbreak <- tibble::tibble(
+           outbreakId = integer(0), reportId = integer(0), eventId = integer(0),
+           fetch_timestamp = as.POSIXct(character(0))
+       )
   }
 
-   # Post-process diagnosticMethods if needed
+   # Post-process diagnosticMethods
   if ("diagnosticMethods" %in% names(details_list) && nrow(details_list$diagnosticMethods) > 0) {
       if(verbose) message("Post-processing diagnosticMethods...")
+      id_cols_dm <- c("outbreakId", "reportId", "eventId", "fetch_timestamp")
       details_list$diagnosticMethods <- details_list$diagnosticMethods %>%
           tidyr::unnest_wider(any_of("nature"), names_sep = "_", names_repair = "unique") %>%
+          dplyr::relocate(dplyr::all_of(id_cols_dm)) %>%
           dplyr::rename_with(~gsub("\\.\\.\\.[0-9]+$", "", .), dplyr::matches("\\.\\.\\.[0-9]+$"))
   } else {
-       details_list$diagnosticMethods <- tibble::tibble(outbreakId = integer(0), reportId = integer(0))
+       details_list$diagnosticMethods <- tibble::tibble(
+           outbreakId = integer(0), reportId = integer(0), eventId = integer(0),
+           fetch_timestamp = as.POSIXct(character(0))
+       )
   }
 
-  # Ensure all expected tables exist in the final list, even if empty
+   # Post-process controlMeasures (similar pattern)
+   if ("controlMeasures" %in% names(details_list) && nrow(details_list$controlMeasures) > 0) {
+       if(verbose) message("Post-processing controlMeasures...")
+       id_cols_cm <- c("outbreakId", "reportId", "eventId", "fetch_timestamp")
+       details_list$controlMeasures <- details_list$controlMeasures %>%
+           tidyr::unnest_wider(any_of(c("measure", "status")), names_sep = "_", names_repair = "unique") %>%
+           dplyr::relocate(dplyr::all_of(id_cols_cm)) %>%
+           dplyr::rename_with(~gsub("\\.\\.\\.[0-9]+$", "", .), dplyr::matches("\\.\\.\\.[0-9]+$"))
+   } else {
+        details_list$controlMeasures <- tibble::tibble(
+            outbreakId = integer(0), reportId = integer(0), eventId = integer(0),
+            fetch_timestamp = as.POSIXct(character(0))
+        )
+   }
+
+  # Ensure all expected tables exist in the final list, even if empty, with standard cols
   expected_tables <- c("outbreak", "adminDivisions", "quantityUnit", "speciesQuantities",
                        "controlMeasures", "diagnosticMethods", "additionalMeasures",
                        "measuresNotImplemented")
   for (tbl_name in expected_tables) {
       if (!tbl_name %in% names(details_list)) {
-          details_list[[tbl_name]] <- tibble::tibble(outbreakId = integer(0), reportId = integer(0))
-          if(verbose) message(sprintf("Added empty tibble for missing element: %s", tbl_name))
+          details_list[[tbl_name]] <- tibble::tibble(
+              outbreakId = integer(0), reportId = integer(0), eventId = integer(0),
+              fetch_timestamp = as.POSIXct(character(0))
+          )
+          if(verbose) message(sprintf("Added empty tibble structure for missing element: %s", tbl_name))
+      } else {
+          # Ensure existing tables also have the standard columns and order
+          std_cols <- c("outbreakId", "reportId", "eventId", "fetch_timestamp")
+          current_tbl <- details_list[[tbl_name]]
+          # Add missing standard columns
+          for(col in std_cols) {
+              if (!col %in% names(current_tbl)) {
+                  # Add with appropriate type (handle POSIXct specifically)
+                  current_tbl[[col]] <- if(col == "fetch_timestamp") as.POSIXct(NA) else NA_integer_
+              }
+          }
+          # Ensure correct order
+          details_list[[tbl_name]] <- dplyr::relocate(current_tbl, dplyr::all_of(std_cols))
       }
   }
 
@@ -821,9 +826,10 @@ get_woah_outbreak_details <- function(report_id, outbreak_id, language = "en", v
 #' @return A named list of tibbles. Each element in the list corresponds to a
 #'   component of the outbreak details (e.g., `outbreak`, `adminDivisions`,
 #'   `speciesQuantities`, `diagnosticMethods`, etc.), containing the combined data
-#'   from all successfully fetched outbreaks. Returns an empty named list if no
-#'   outbreaks match or if errors occur during fetching. Returns NULL if the
-#'   initial event or location fetch fails critically.
+#'   from all successfully fetched outbreaks. Each table includes `outbreakId`,
+#'   `reportId`, `eventId`, and `fetch_timestamp`. Returns an empty named list
+#'   with the standard structure if no outbreaks match or if errors occur during
+#'   fetching. Returns NULL if the initial event or location fetch fails critically.
 #' @examples
 #' \dontrun{
 #'   # Get full details for HPAI outbreaks in March 2025
@@ -853,14 +859,18 @@ get_woah_outbreaks_full_info <- function(start_date,
                                          language = "en",
                                          verbose = FALSE) {
 
-  # Define the specific tables requested by the user
-  requested_tables <- c(
-    "adminDivisions", "quantityUnit", "speciesQuantities",
-    "controlMeasures", "diagnosticMethods"
+  # Define the standard structure for the output list (all potential tables)
+  standard_tables <- c(
+      "outbreak", "adminDivisions", "quantityUnit", "speciesQuantities",
+      "controlMeasures", "diagnosticMethods", "additionalMeasures",
+      "measuresNotImplemented"
   )
-  # Initialize result list with empty tibbles for the requested structure
-  empty_result_list <- purrr::map(requested_tables, ~ tibble::tibble(outbreakId = integer(0), reportId = integer(0))) %>%
-                       purrr::set_names(requested_tables)
+  # Initialize result list with empty tibbles having the standard ID/timestamp columns
+  empty_result_list <- purrr::map(standard_tables, ~ tibble::tibble(
+                                      outbreakId = integer(0), reportId = integer(0), eventId = integer(0),
+                                      fetch_timestamp = as.POSIXct(character(0))
+                                  )) %>%
+                       purrr::set_names(standard_tables)
 
   if (verbose) message("--- Starting Full Outbreak Information Fetch (Multi-Table Output) ---")
 
@@ -902,11 +912,16 @@ get_woah_outbreaks_full_info <- function(start_date,
     abort("Required columns 'eventId' or 'outbreakId' missing from locations data.")
   }
 
-  # Select necessary columns and join
+  # Select necessary columns (including eventId) and join
   events_subset <- outbreak_events %>% select(eventId, reportId) %>% distinct()
   locations_subset <- outbreak_locations %>% select(eventId, outbreakId) %>% distinct()
+
+  # Ensure eventId is numeric before join if it isn't already
+  events_subset <- events_subset %>% mutate(eventId = as.numeric(eventId))
+  locations_subset <- locations_subset %>% mutate(eventId = as.numeric(eventId))
+
   report_outbreak_pairs <- inner_join(events_subset, locations_subset, by = "eventId", relationship = "many-to-many") %>%
-                           select(reportId, outbreakId) %>%
+                           select(reportId, outbreakId, eventId) %>% # Keep eventId
                            distinct()
 
   if (nrow(report_outbreak_pairs) == 0) {
@@ -922,16 +937,21 @@ get_woah_outbreaks_full_info <- function(start_date,
   possibly_get_details_list <- possibly(get_woah_outbreak_details, otherwise = NULL, quiet = !verbose)
 
   # This will be a list, where each element is *either* NULL *or* a named list of tibbles
-  all_details_results <- map2(
-    report_outbreak_pairs$reportId,
-    report_outbreak_pairs$outbreakId,
-    ~ possibly_get_details_list(
-        report_id = .x,
-        outbreak_id = .y,
-        language = language,
-        verbose = FALSE # Keep inner call quiet unless debugging needed
+  # Use pmap for iterating over multiple columns (reportId, outbreakId, eventId)
+  all_details_results <- purrr::pmap(
+      list(
+          report_id = report_outbreak_pairs$reportId,
+          outbreak_id = report_outbreak_pairs$outbreakId,
+          event_id = report_outbreak_pairs$eventId # Pass event_id here
       ),
-    .progress = verbose
+      ~ possibly_get_details_list(
+          report_id = ..1,
+          outbreak_id = ..2,
+          event_id = ..3, # Use the passed event_id
+          language = language,
+          verbose = FALSE # Keep inner call quiet unless debugging needed
+      ),
+      .progress = verbose
   )
 
   # Filter out the NULL results (where fetching failed for an outbreak)
@@ -950,49 +970,57 @@ get_woah_outbreaks_full_info <- function(start_date,
   # --- 5. Combine Corresponding Tibbles Across Outbreaks ---
   if (verbose) message("Step 5: Combining corresponding tables across all fetched outbreaks...")
 
-  # Use the requested table names for processing
-  table_names <- requested_tables
+  # Use the standard table names for processing
+  table_names <- standard_tables
 
-  # Use map to iterate through requested table names, pluck the corresponding tibble from each list, and bind_rows
+  # Use map to iterate through standard table names, pluck the corresponding tibble from each list, and bind_rows
   combined_tables_list <- map(table_names, function(tbl_name) {
-    if (verbose) message(sprintf("  Combining table: '%s'", tbl_name))
-    
-    # Initialize empty tibble with outbreakId and reportId columns
-    combined_tbl <- tibble::tibble(outbreakId = integer(0), reportId = integer(0))
-    
-    # Process each outbreak's data
-    for (i in seq_along(successful_details_lists)) {
-      outbreak_data <- successful_details_lists[[i]]
-      current_tbl <- purrr::pluck(outbreak_data, tbl_name)
-      
-      # Skip if not a data frame or empty
-      if (!is.data.frame(current_tbl) || nrow(current_tbl) == 0) next
-      
-      # Get the reportId and outbreakId from the original pairs
-      report_id <- report_outbreak_pairs$reportId[i]
-      outbreak_id <- report_outbreak_pairs$outbreakId[i]
-      
-      # Ensure IDs are set in the current table
-      if (!"outbreakId" %in% names(current_tbl)) {
-        current_tbl$outbreakId <- outbreak_id
+      if (verbose) message(sprintf("  Combining table: '%s'", tbl_name))
+
+      # Pluck the specific tibble from each successful result list
+      tables_to_combine <- purrr::map(successful_details_lists, ~ purrr::pluck(.x, tbl_name)) %>%
+                           purrr::discard(is.null) # Remove NULLs if a table was missing in a specific outbreak
+
+      # Filter out any non-dataframes or zero-row dataframes before binding
+      tables_to_combine <- purrr::keep(tables_to_combine, ~ is.data.frame(.x) && nrow(.x) > 0)
+
+      if (length(tables_to_combine) == 0) {
+          if (verbose) message(sprintf("    No data found for table '%s' in any outbreak.", tbl_name))
+          # Return the standard empty structure for this table
+          return(
+              tibble::tibble(
+                  outbreakId = integer(0), reportId = integer(0), eventId = integer(0),
+                  fetch_timestamp = as.POSIXct(character(0))
+              )
+          )
       }
-      if (!"reportId" %in% names(current_tbl)) {
-        current_tbl$reportId <- report_id
-      }
-      
-      # Bind to the combined table
-      combined_tbl <- dplyr::bind_rows(combined_tbl, current_tbl)
-    }
-    
-    if (nrow(combined_tbl) == 0) {
-      if (verbose) message(sprintf("    No data found for table '%s' in any outbreak.", tbl_name))
-    } else {
+
+      # Combine using bind_rows
+      combined_tbl <- tryCatch({
+          dplyr::bind_rows(tables_to_combine)
+      }, error = function(e) {
+          warning(sprintf("Error combining table '%s': %s. Returning empty structure.", tbl_name, e$message))
+          return(
+              tibble::tibble(
+                  outbreakId = integer(0), reportId = integer(0), eventId = integer(0),
+                  fetch_timestamp = as.POSIXct(character(0))
+              )
+          )
+      })
+
       if (verbose) message(sprintf("    Combined '%s' table has %d rows.", tbl_name, nrow(combined_tbl)))
-    }
-    
-    # Ensure IDs are first columns
-    combined_tbl %>% dplyr::relocate(outbreakId, reportId)
-    
+
+      # Ensure standard columns exist and are relocated (should be handled by safe_extract, but double-check)
+      std_cols <- c("outbreakId", "reportId", "eventId", "fetch_timestamp")
+      for(col in std_cols) {
+          if (!col %in% names(combined_tbl)) {
+              combined_tbl[[col]] <- if(col == "fetch_timestamp") as.POSIXct(NA) else NA_integer_
+          }
+      }
+      combined_tbl <- dplyr::relocate(combined_tbl, dplyr::all_of(std_cols))
+
+      return(combined_tbl)
+
   }) %>% set_names(table_names) # Set the names of the final list
 
 
@@ -1001,15 +1029,10 @@ get_woah_outbreaks_full_info <- function(start_date,
   if (verbose) message("Finished processing. Returning list of combined tables.")
   if (verbose) message("--- Full Outbreak Information Fetch Complete (Multi-Table Output) ---")
 
-  # Ensure all requested tables have outbreakId and reportId columns and are relocated
-  final_result <- map(combined_tables_list, function(tbl) {
-    # Ensure the columns exist, adding NA if necessary
-    if (!"outbreakId" %in% names(tbl)) tbl$outbreakId <- NA_integer_
-    if (!"reportId" %in% names(tbl)) tbl$reportId <- NA_integer_
-    # Relocate to the front
-    dplyr::relocate(tbl, outbreakId, reportId)
-  }) %>% set_names(table_names) # Ensure the final list has the correct names
+  # --- 6. Final Result ---
+  # The result is the named list of combined tibbles
+  if (verbose) message("Finished processing. Returning list of combined tables.")
+  if (verbose) message("--- Full Outbreak Information Fetch Complete (Multi-Table Output) ---")
 
-  # Return only the requested tables
-  return(final_result)
+  return(combined_tables_list)
 }
