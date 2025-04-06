@@ -283,7 +283,7 @@ get_woah_outbreaks <- function(start_date,
                                end_date,
                                disease_name = NULL,
                                language = "en",
-                               page_size = 100,
+                               page_size = 500,
                                max_pages = 50,
                                verbose = FALSE) {
 
@@ -498,6 +498,11 @@ get_woah_outbreaks <- function(start_date,
 # --- Helper Function: safe_extract_to_tibble (Internal) ---
 # Safely extracts a named element from the main list, converts to tibble, adds IDs and timestamp.
 safe_extract_to_tibble <- function(data_list, element_name, outbreak_id, report_id, event_id) {
+  # Ensure IDs are integers right at the start
+  outbreak_id <- as.integer(outbreak_id)
+  report_id <- as.integer(report_id)
+  event_id <- as.integer(event_id)
+
   fetch_time <- Sys.time() # Capture timestamp
   element <- purrr::pluck(data_list, element_name)
   # Store IDs and timestamp
@@ -706,12 +711,21 @@ get_woah_outbreak_details <- function(report_id, outbreak_id, event_id, language
       # Use tidyr::unnest_wider directly, handling potential errors if columns don't exist
       # Preserve original ID columns
       id_cols_sq <- c("outbreakId", "reportId", "eventId", "fetch_timestamp")
-      sq_processed <- details_list$speciesQuantities %>%
+      original_sq_data <- details_list$speciesQuantities
+      
+      # Separate IDs and data
+      ids_only <- original_sq_data %>% dplyr::select(dplyr::all_of(id_cols_sq))
+      data_only <- original_sq_data %>% dplyr::select(-dplyr::all_of(id_cols_sq))
+      
+      # Perform unnesting on data_only
+      data_unnested <- data_only %>%
           tidyr::unnest_wider(any_of(c("totalQuantities", "newQuantities", "speciesType")),
                               names_sep = "_",
-                              names_repair = "unique") %>%
-          # Ensure ID columns are preserved and relocated
-          dplyr::relocate(dplyr::all_of(id_cols_sq))
+                              names_repair = "unique")
+                              
+      # Bind IDs back to unnested data
+      sq_processed <- dplyr::bind_cols(ids_only, data_unnested) %>%
+                      dplyr::relocate(dplyr::all_of(id_cols_sq)) # Ensure order
 
       details_list$speciesQuantities <- sq_processed
   } else {
@@ -726,11 +740,20 @@ get_woah_outbreak_details <- function(report_id, outbreak_id, event_id, language
   if ("outbreak" %in% names(details_list) && nrow(details_list$outbreak) > 0) {
       if(verbose) message("Post-processing outbreak...")
       id_cols_ob <- c("outbreakId", "reportId", "eventId", "fetch_timestamp")
-      details_list$outbreak <- details_list$outbreak %>%
+      original_ob_data <- details_list$outbreak
+      
+      ids_only <- original_ob_data %>% dplyr::select(dplyr::all_of(id_cols_ob))
+      data_only <- original_ob_data %>% dplyr::select(-dplyr::all_of(id_cols_ob))
+      
+      data_unnested <- data_only %>%
           tidyr::unnest_wider(any_of(c("disease", "epiUnitType", "description")), names_sep = "_", names_repair = "unique") %>%
-          dplyr::relocate(dplyr::all_of(id_cols_ob)) %>%
-          # Rename potentially duplicated columns after unnesting (e.g., description_original...1)
+          # Rename potentially duplicated columns after unnesting
           dplyr::rename_with(~gsub("\\.\\.\\.[0-9]+$", "", .), dplyr::matches("\\.\\.\\.[0-9]+$"))
+          
+      ob_processed <- dplyr::bind_cols(ids_only, data_unnested) %>%
+                      dplyr::relocate(dplyr::all_of(id_cols_ob))
+
+      details_list$outbreak <- ob_processed
   } else {
        details_list$outbreak <- tibble::tibble(
            outbreakId = integer(0), reportId = integer(0), eventId = integer(0),
@@ -742,10 +765,19 @@ get_woah_outbreak_details <- function(report_id, outbreak_id, event_id, language
   if ("diagnosticMethods" %in% names(details_list) && nrow(details_list$diagnosticMethods) > 0) {
       if(verbose) message("Post-processing diagnosticMethods...")
       id_cols_dm <- c("outbreakId", "reportId", "eventId", "fetch_timestamp")
-      details_list$diagnosticMethods <- details_list$diagnosticMethods %>%
+      original_dm_data <- details_list$diagnosticMethods
+      
+      ids_only <- original_dm_data %>% dplyr::select(dplyr::all_of(id_cols_dm))
+      data_only <- original_dm_data %>% dplyr::select(-dplyr::all_of(id_cols_dm))
+      
+      data_unnested <- data_only %>%
           tidyr::unnest_wider(any_of("nature"), names_sep = "_", names_repair = "unique") %>%
-          dplyr::relocate(dplyr::all_of(id_cols_dm)) %>%
           dplyr::rename_with(~gsub("\\.\\.\\.[0-9]+$", "", .), dplyr::matches("\\.\\.\\.[0-9]+$"))
+          
+      dm_processed <- dplyr::bind_cols(ids_only, data_unnested) %>%
+                      dplyr::relocate(dplyr::all_of(id_cols_dm))
+
+      details_list$diagnosticMethods <- dm_processed
   } else {
        details_list$diagnosticMethods <- tibble::tibble(
            outbreakId = integer(0), reportId = integer(0), eventId = integer(0),
@@ -757,10 +789,19 @@ get_woah_outbreak_details <- function(report_id, outbreak_id, event_id, language
    if ("controlMeasures" %in% names(details_list) && nrow(details_list$controlMeasures) > 0) {
        if(verbose) message("Post-processing controlMeasures...")
        id_cols_cm <- c("outbreakId", "reportId", "eventId", "fetch_timestamp")
-       details_list$controlMeasures <- details_list$controlMeasures %>%
+       original_cm_data <- details_list$controlMeasures
+       
+       ids_only <- original_cm_data %>% dplyr::select(dplyr::all_of(id_cols_cm))
+       data_only <- original_cm_data %>% dplyr::select(-dplyr::all_of(id_cols_cm))
+       
+       data_unnested <- data_only %>%
            tidyr::unnest_wider(any_of(c("measure", "status")), names_sep = "_", names_repair = "unique") %>%
-           dplyr::relocate(dplyr::all_of(id_cols_cm)) %>%
            dplyr::rename_with(~gsub("\\.\\.\\.[0-9]+$", "", .), dplyr::matches("\\.\\.\\.[0-9]+$"))
+           
+       cm_processed <- dplyr::bind_cols(ids_only, data_unnested) %>%
+                       dplyr::relocate(dplyr::all_of(id_cols_cm))
+
+       details_list$controlMeasures <- cm_processed
    } else {
         details_list$controlMeasures <- tibble::tibble(
             outbreakId = integer(0), reportId = integer(0), eventId = integer(0),
@@ -783,15 +824,16 @@ get_woah_outbreak_details <- function(report_id, outbreak_id, event_id, language
           # Ensure existing tables also have the standard columns and order
           std_cols <- c("outbreakId", "reportId", "eventId", "fetch_timestamp")
           current_tbl <- details_list[[tbl_name]]
-          # Add missing standard columns
-          for(col in std_cols) {
-              if (!col %in% names(current_tbl)) {
-                  # Add with appropriate type (handle POSIXct specifically)
-                  current_tbl[[col]] <- if(col == "fetch_timestamp") as.POSIXct(NA) else NA_integer_
-              }
+          # Ensure the standard columns exist before trying to relocate
+          if(all(std_cols %in% names(current_tbl))) {
+              # Ensure correct order
+              details_list[[tbl_name]] <- dplyr::relocate(current_tbl, dplyr::all_of(std_cols))
+          } else {
+              # If standard columns are somehow missing, log a warning but don't add NAs
+              warning(sprintf("Standard ID/timestamp columns missing from table '%s' before returning from get_woah_outbreak_details. This should not happen.", tbl_name))
+              # Keep the table as is, without adding NA columns
+              details_list[[tbl_name]] <- current_tbl
           }
-          # Ensure correct order
-          details_list[[tbl_name]] <- dplyr::relocate(current_tbl, dplyr::all_of(std_cols))
       }
   }
 
@@ -858,22 +900,22 @@ get_woah_outbreaks_full_info <- function(start_date,
                                          disease_name = NULL,
                                          language = "en",
                                          verbose = FALSE) {
-
+  
   # Define the standard structure for the output list (all potential tables)
   standard_tables <- c(
-      "outbreak", "adminDivisions", "quantityUnit", "speciesQuantities",
-      "controlMeasures", "diagnosticMethods", "additionalMeasures",
-      "measuresNotImplemented"
+    "outbreak", "adminDivisions", "quantityUnit", "speciesQuantities",
+    "controlMeasures", "diagnosticMethods", "additionalMeasures",
+    "measuresNotImplemented"
   )
   # Initialize result list with empty tibbles having the standard ID/timestamp columns
   empty_result_list <- purrr::map(standard_tables, ~ tibble::tibble(
-                                      outbreakId = integer(0), reportId = integer(0), eventId = integer(0),
-                                      fetch_timestamp = as.POSIXct(character(0))
-                                  )) %>%
-                       purrr::set_names(standard_tables)
-
+    outbreakId = integer(0), reportId = integer(0), eventId = integer(0),
+    fetch_timestamp = as.POSIXct(character(0))
+  )) %>%
+    purrr::set_names(standard_tables)
+  
   if (verbose) message("--- Starting Full Outbreak Information Fetch (Multi-Table Output) ---")
-
+  
   # --- 1. Fetch Outbreak Events ---
   if (verbose) message("Step 1: Fetching outbreak events...")
   outbreak_events <- get_woah_outbreaks(start_date = start_date, end_date = end_date, disease_name = disease_name, language = language, verbose = verbose)
@@ -886,7 +928,7 @@ get_woah_outbreaks_full_info <- function(start_date,
     return(empty_result_list) # Return empty list structure
   }
   if (verbose) message(sprintf("Found %d outbreak events.", nrow(outbreak_events)))
-
+  
   # --- 2. Fetch Outbreak Locations ---
   if (verbose) message("Step 2: Fetching outbreak locations...")
   outbreak_locations <- get_woah_outbreak_locations(start_date = start_date, end_date = end_date, disease_name = disease_name, language = language, verbose = verbose)
@@ -901,7 +943,7 @@ get_woah_outbreaks_full_info <- function(start_date,
     return(empty_result_list) # Return empty list structure
   }
   if (verbose) message(sprintf("Found %d outbreak location records.", nrow(outbreak_locations)))
-
+  
   # --- 3. Link Events and Locations to get Report/Outbreak Pairs ---
   if (verbose) message("Step 3: Linking events and locations...")
   # Input validation for required columns
@@ -911,128 +953,187 @@ get_woah_outbreaks_full_info <- function(start_date,
   if (!all(c("eventId", "outbreakId") %in% names(outbreak_locations))) {
     abort("Required columns 'eventId' or 'outbreakId' missing from locations data.")
   }
-
+  
   # Select necessary columns (including eventId) and join
   events_subset <- outbreak_events %>% select(eventId, reportId) %>% distinct()
   locations_subset <- outbreak_locations %>% select(eventId, outbreakId) %>% distinct()
-
+  
   # Ensure eventId is numeric before join if it isn't already
   events_subset <- events_subset %>% mutate(eventId = as.numeric(eventId))
   locations_subset <- locations_subset %>% mutate(eventId = as.numeric(eventId))
-
+  
   report_outbreak_pairs <- inner_join(events_subset, locations_subset, by = "eventId", relationship = "many-to-many") %>%
-                           select(reportId, outbreakId, eventId) %>% # Keep eventId
-                           distinct()
-
+    select(reportId, outbreakId, eventId) %>% # Keep eventId
+    distinct()
+  
   if (nrow(report_outbreak_pairs) == 0) {
     if (verbose) message("No matching event/location pairs found after join.")
     return(empty_result_list) # Return empty list structure
   }
   n_pairs <- nrow(report_outbreak_pairs)
   if (verbose) message(sprintf("Found %d unique report/outbreak pairs to fetch details for.", n_pairs))
-
+  
   # --- 4. Fetch Details for Each Pair using the updated get_woah_outbreak_details ---
   if (verbose) message("Step 4: Fetching full details (as list of tables) for each outbreak...")
   # Use the updated internal function which returns a list of tibbles or NULL
   possibly_get_details_list <- possibly(get_woah_outbreak_details, otherwise = NULL, quiet = !verbose)
-
+  
   # This will be a list, where each element is *either* NULL *or* a named list of tibbles
   # Use pmap for iterating over multiple columns (reportId, outbreakId, eventId)
   all_details_results <- purrr::pmap(
-      list(
-          report_id = report_outbreak_pairs$reportId,
-          outbreak_id = report_outbreak_pairs$outbreakId,
-          event_id = report_outbreak_pairs$eventId # Pass event_id here
-      ),
-      ~ possibly_get_details_list(
-          report_id = ..1,
-          outbreak_id = ..2,
-          event_id = ..3, # Use the passed event_id
-          language = language,
-          verbose = FALSE # Keep inner call quiet unless debugging needed
-      ),
-      .progress = verbose
+    list(
+      report_id = report_outbreak_pairs$reportId,
+      outbreak_id = report_outbreak_pairs$outbreakId,
+      event_id = report_outbreak_pairs$eventId # Pass event_id here
+    ),
+    ~ possibly_get_details_list(
+      report_id = ..1,
+      outbreak_id = ..2,
+      event_id = ..3, # Use the passed event_id
+      language = language,
+      verbose = FALSE # Keep inner call quiet unless debugging needed
+    ),
+    .progress = verbose
   )
-
+  
   # Filter out the NULL results (where fetching failed for an outbreak)
   successful_details_lists <- discard(all_details_results, is.null)
   n_successful <- length(successful_details_lists)
   n_failed <- n_pairs - n_successful
-
+  
   if (verbose) message(sprintf("Successfully fetched detail lists for %d outbreaks.", n_successful))
   if (n_failed > 0 && verbose) message(sprintf("Failed to fetch details for %d outbreaks.", n_failed))
-
+  
   if (n_successful == 0) {
     if (verbose) message("No details fetched successfully for any outbreak.")
     return(empty_result_list) # Return empty list structure
   }
-
+  
+  # --- NEW STEP: Add IDs to tables in successful_details_lists ---
+  if (verbose) message("Adding identifiers to each table in fetched outbreaks...")
+  
+  # Get corresponding IDs for each successful detail list
+  valid_indices <- which(!sapply(all_details_results, is.null))
+  enriched_details_lists <- purrr::map2(
+    successful_details_lists,
+    valid_indices,
+    function(detail_list, valid_idx) {
+      # Get the corresponding row from report_outbreak_pairs
+      pair_data <- report_outbreak_pairs[valid_idx, ]
+      outbreak_id <- pair_data$outbreakId
+      report_id <- pair_data$reportId
+      event_id <- pair_data$eventId
+      fetch_timestamp <- Sys.time() # Current timestamp for all tables from this outbreak
+      
+      # For each table in this outbreak's detail list, add the ID columns
+      purrr::map(detail_list, function(table) {
+        # Skip if not a dataframe
+        if (!is.data.frame(table) || nrow(table) == 0) {
+          # Return empty table with IDs
+          return(tibble::tibble(
+            outbreakId = integer(0),
+            reportId = integer(0),
+            eventId = integer(0),
+            fetch_timestamp = as.POSIXct(character(0))
+          ))
+        }
+        
+        # Add the ID columns to this table
+        table %>%
+          mutate(
+            outbreakId = outbreak_id,
+            reportId = report_id,
+            eventId = event_id,
+            fetch_timestamp = fetch_timestamp
+          ) %>%
+          # Ensure these columns come first
+          select(outbreakId, reportId, eventId, fetch_timestamp, everything())
+      })
+    }
+  )
+  
   # --- 5. Combine Corresponding Tibbles Across Outbreaks ---
   if (verbose) message("Step 5: Combining corresponding tables across all fetched outbreaks...")
-
+  
   # Use the standard table names for processing
   table_names <- standard_tables
-
-  # Use map to iterate through standard table names, pluck the corresponding tibble from each list, and bind_rows
+  
+  # Use map to iterate through standard table names
   combined_tables_list <- map(table_names, function(tbl_name) {
-      if (verbose) message(sprintf("  Combining table: '%s'", tbl_name))
-
-      # Pluck the specific tibble from each successful result list
-      tables_to_combine <- purrr::map(successful_details_lists, ~ purrr::pluck(.x, tbl_name)) %>%
-                           purrr::discard(is.null) # Remove NULLs if a table was missing in a specific outbreak
-
-      # Filter out any non-dataframes or zero-row dataframes before binding
-      tables_to_combine <- purrr::keep(tables_to_combine, ~ is.data.frame(.x) && nrow(.x) > 0)
-
-      if (length(tables_to_combine) == 0) {
-          if (verbose) message(sprintf("    No data found for table '%s' in any outbreak.", tbl_name))
-          # Return the standard empty structure for this table
-          return(
-              tibble::tibble(
-                  outbreakId = integer(0), reportId = integer(0), eventId = integer(0),
-                  fetch_timestamp = as.POSIXct(character(0))
-              )
-          )
-      }
-
-      # Combine using bind_rows
-      combined_tbl <- tryCatch({
-          dplyr::bind_rows(tables_to_combine)
-      }, error = function(e) {
-          warning(sprintf("Error combining table '%s': %s. Returning empty structure.", tbl_name, e$message))
-          return(
-              tibble::tibble(
-                  outbreakId = integer(0), reportId = integer(0), eventId = integer(0),
-                  fetch_timestamp = as.POSIXct(character(0))
-              )
-          )
-      })
-
-      if (verbose) message(sprintf("    Combined '%s' table has %d rows.", tbl_name, nrow(combined_tbl)))
-
-      # Ensure standard columns exist and are relocated (should be handled by safe_extract, but double-check)
-      std_cols <- c("outbreakId", "reportId", "eventId", "fetch_timestamp")
+    if (verbose) message(sprintf("  Combining table: '%s'", tbl_name))
+    
+    # Pluck the specific tibble from each ENRICHED result list
+    tables_to_combine <- purrr::map(enriched_details_lists, ~ purrr::pluck(.x, tbl_name)) %>%
+      purrr::discard(is.null) # Remove NULLs if a table was missing
+    
+    # Filter out any non-dataframes or zero-row dataframes before binding
+    tables_to_combine <- purrr::keep(tables_to_combine, ~ is.data.frame(.x) && nrow(.x) > 0)
+    
+    # Define the standard empty structure here for return if no data
+    empty_structure <- tibble::tibble(
+      outbreakId = integer(0), reportId = integer(0), eventId = integer(0),
+      fetch_timestamp = as.POSIXct(character(0))
+    )
+    
+    if (length(tables_to_combine) == 0) {
+      if (verbose) message(sprintf("    No data found for table '%s' in any outbreak.", tbl_name))
+      return(empty_structure)
+    }
+    
+    # --- Pre-bind Type Coercion ---
+    # Explicitly ensure correct types in each table *before* binding
+    std_cols <- c("outbreakId", "reportId", "eventId", "fetch_timestamp")
+    tables_to_combine_coerced <- purrr::map(tables_to_combine, function(tbl) {
+      # Add missing standard columns if they somehow got dropped (shouldn't happen)
       for(col in std_cols) {
-          if (!col %in% names(combined_tbl)) {
-              combined_tbl[[col]] <- if(col == "fetch_timestamp") as.POSIXct(NA) else NA_integer_
-          }
+        if (!col %in% names(tbl)) {
+          tbl[[col]] <- if(col == "fetch_timestamp") as.POSIXct(NA) else NA_integer_
+        }
       }
-      combined_tbl <- dplyr::relocate(combined_tbl, dplyr::all_of(std_cols))
-
-      return(combined_tbl)
-
+      # Coerce types
+      tryCatch({
+        tbl %>%
+          dplyr::mutate(
+            outbreakId = as.integer(outbreakId),
+            reportId = as.integer(reportId),
+            eventId = as.integer(eventId),
+            fetch_timestamp = as.POSIXct(fetch_timestamp) # Ensure POSIXct
+          ) %>%
+          # Ensure order just before binding
+          dplyr::relocate(dplyr::all_of(std_cols))
+      }, error = function(e) {
+        warning(sprintf("Error coercing types for table '%s' before binding: %s. Returning original.", tbl_name, e$message))
+        tbl # Return original table if coercion fails
+      })
+    })
+    # --- End Pre-bind Coercion ---
+    
+    # Combine using bind_rows with the coerced list
+    combined_tbl <- tryCatch({
+      dplyr::bind_rows(tables_to_combine_coerced) # Use the coerced list
+    }, error = function(e) {
+      warning(sprintf("Error combining table '%s' using bind_rows: %s. Returning empty structure.", tbl_name, e$message))
+      # Return the standard empty structure on error
+      return(empty_structure)
+    })
+    
+    # Ensure the standard empty structure if bind_rows returns NULL or empty
+    if (is.null(combined_tbl) || nrow(combined_tbl) == 0) {
+      if (verbose) message(sprintf("    Combined table '%s' is empty.", tbl_name))
+      return(empty_structure)
+    }
+    
+    if (verbose) message(sprintf("    Combined '%s' table has %d rows.", tbl_name, nrow(combined_tbl)))
+    
+    # Return the result of bind_rows directly.
+    return(combined_tbl)
+    
   }) %>% set_names(table_names) # Set the names of the final list
-
-
+  
   # --- 6. Final Result ---
   # The result is the named list of combined tibbles
   if (verbose) message("Finished processing. Returning list of combined tables.")
   if (verbose) message("--- Full Outbreak Information Fetch Complete (Multi-Table Output) ---")
-
-  # --- 6. Final Result ---
-  # The result is the named list of combined tibbles
-  if (verbose) message("Finished processing. Returning list of combined tables.")
-  if (verbose) message("--- Full Outbreak Information Fetch Complete (Multi-Table Output) ---")
-
+  
   return(combined_tables_list)
 }
